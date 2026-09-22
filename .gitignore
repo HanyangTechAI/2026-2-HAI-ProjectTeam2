@@ -1,0 +1,56 @@
+# Python bytecode, build outputs and packaging
+__pycache__/
+*.py[cod]
+*$py.class
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+
+# Virtual environments and local settings
+.venv/
+venv/
+env/
+ENV/
+.env
+.env.*
+!.env.example
+
+# Test, lint and notebook caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.ipynb_checkpoints/
+
+# Editor and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.log
+
+# Audio and model artifacts (store large files in Drive)
+*.wav
+*.WAV
+*.mp3
+*.flac
+*.ogg
+*.aif
+*.aiff
+*.m4a
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.h5
+*.safetensors
+
+# Only a few small 1-2 second dry test samples may be committed
+!/data/dry/sample_*.wav

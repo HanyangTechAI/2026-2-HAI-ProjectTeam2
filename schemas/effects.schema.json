@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EffectDefinitionMap",
+  "description": "모든 이펙터가 따라야 하는 단일 구조. 키는 이펙터 이름(compressor, overdrive, distortion, fuzz ...)이고, 값은 아래 구조를 그대로 따라야 한다.",
+  "type": "object",
+  "additionalProperties": { "$ref": "#/$defs/EffectDefinition" },
+
+  "$defs": {
+    "EffectDefinition": {
+      "type": "object",
+      "required": ["category", "source", "class_name", "params"],
+      "additionalProperties": false,
+      "properties": {
+        "category": { "type": "string" },
+        "reference_pedal": {
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "required": ["brand", "model"],
+              "properties": {
+                "brand": { "type": "string" },
+                "model": { "type": "string" }
+              },
+              "additionalProperties": false
+            }
+          ]
+        },
+        "source": { "type": "string", "enum": ["pedalboard", "vst"] },
+        "class_name": { "type": "string" },
+        "composite_of": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "array", "items": { "type": "string" } }
+          ]
+        },
+        "params": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/ParamDefinition" }
+        }
+      }
+    },
+
+    "ParamDefinition": {
+      "type": "object",
+      "required": ["name", "maps_to", "type", "default"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "maps_to": { "type": "string" },
+        "type": { "type": "string", "enum": ["continuous", "categorical", "boolean"] },
+        "unit": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
+        "range": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 }
+          ]
+        },
+        "options": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "array", "items": { "type": "string" } }
+          ]
+        },
+        "default": {}
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "type": { "const": "continuous" } } },
+          "then": { "required": ["range"] }
+        },
+        {
+          "if": { "properties": { "type": { "const": "categorical" } } },
+          "then": { "required": ["options"] }
+        }
+      ]
+    }
+  }
+}

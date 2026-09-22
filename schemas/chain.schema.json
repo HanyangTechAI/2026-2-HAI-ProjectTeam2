@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hai-project.example/schemas/chain.schema.json",
+  "title": "ChainInstance",
+  "type": "object",
+  "required": [
+    "amp_id",
+    "chain"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "amp_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "chain": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "effect_type",
+          "values"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "effect_type": {
+            "type": "string",
+            "minLength": 1
+          },
+          "values": {
+            "type": "object",
+            "additionalProperties": {
+              "type": [
+                "number",
+                "string",
+                "boolean"
+              ]
+            }
+          }
+        }
+      }
+    }
+  }
+}

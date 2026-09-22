@@ -1,0 +1,68 @@
+{
+  "compressor": {
+    "category": "dynamics",
+    "reference_pedal": null,
+    "source": "pedalboard",
+    "class_name": "Compressor",
+    "composite_of": null,
+    "params": [
+      { "name": "threshold_db", "maps_to": "Compressor.threshold_db", "type": "continuous", "unit": "dB", "range": [-60.0, 0.0], "options": null, "default": -18.0 },
+      { "name": "ratio",        "maps_to": "Compressor.ratio",        "type": "continuous", "unit": null,  "range": [1.0, 20.0],  "options": null, "default": 4.0 },
+      { "name": "attack_ms",    "maps_to": "Compressor.attack_ms",    "type": "continuous", "unit": "ms",  "range": [0.1, 100.0], "options": null, "default": 5.0 },
+      { "name": "release_ms",   "maps_to": "Compressor.release_ms",   "type": "continuous", "unit": "ms",  "range": [10.0, 1000.0], "options": null, "default": 100.0 }
+    ]
+  },
+
+  "eq_3band": {
+    "category": "tone_shaping",
+    "reference_pedal": null,
+    "source": "pedalboard",
+    "class_name": "composite",
+    "composite_of": ["LowShelfFilter", "PeakFilter", "HighShelfFilter"],
+    "params": [
+      { "name": "low_gain_db",  "maps_to": "LowShelfFilter.gain_db",        "type": "continuous", "unit": "dB", "range": [-12.0, 12.0], "options": null, "default": 0.0 },
+      { "name": "mid_freq_hz",  "maps_to": "PeakFilter.cutoff_frequency_hz","type": "continuous", "unit": "Hz", "range": [200.0, 5000.0], "options": null, "default": 1000.0 },
+      { "name": "mid_gain_db",  "maps_to": "PeakFilter.gain_db",            "type": "continuous", "unit": "dB", "range": [-12.0, 12.0], "options": null, "default": 0.0 },
+      { "name": "high_gain_db", "maps_to": "HighShelfFilter.gain_db",       "type": "continuous", "unit": "dB", "range": [-12.0, 12.0], "options": null, "default": 0.0 }
+    ]
+  },
+
+  "overdrive": {
+    "category": "gain_stage",
+    "reference_pedal": { "brand": "Boss", "model": "OD-1 OverDrive" },
+    "source": "pedalboard",
+    "class_name": "composite",
+    "composite_of": ["Distortion", "Gain"],
+    "params": [
+      { "name": "drive", "maps_to": "Distortion.drive_db", "type": "continuous", "unit": "dB", "range": [0.0, 15.0],  "options": null, "default": 6.0 },
+      { "name": "level", "maps_to": "Gain.gain_db",        "type": "continuous", "unit": "dB", "range": [-12.0, 12.0],"options": null, "default": 0.0 }
+    ]
+  },
+
+  "distortion": {
+    "category": "gain_stage",
+    "reference_pedal": { "brand": "Boss", "model": "DS-1 Distortion" },
+    "source": "pedalboard",
+    "class_name": "composite",
+    "composite_of": ["Distortion", "PeakFilter", "Gain"],
+    "params": [
+      { "name": "dist",  "maps_to": "Distortion.drive_db", "type": "continuous", "unit": "dB", "range": [0.0, 40.0],  "options": null, "default": 15.0 },
+      { "name": "tone",  "maps_to": "PeakFilter.gain_db",  "type": "continuous", "unit": "dB", "range": [-9.0, 9.0],  "options": null, "default": 0.0 },
+      { "name": "level", "maps_to": "Gain.gain_db",        "type": "continuous", "unit": "dB", "range": [-12.0, 12.0],"options": null, "default": 0.0 }
+    ]
+  },
+
+  "fuzz": {
+    "category": "gain_stage",
+    "reference_pedal": { "brand": "Boss", "model": "FZ-1W Waza Craft Fuzz" },
+    "source": "pedalboard",
+    "class_name": "composite",
+    "composite_of": ["Distortion", "PeakFilter", "Gain"],
+    "params": [
+      { "name": "fuzz",  "maps_to": "Distortion.drive_db", "type": "continuous",  "unit": "dB", "range": [10.0, 50.0], "options": null,                    "default": 25.0 },
+      { "name": "tone",  "maps_to": "PeakFilter.gain_db",  "type": "continuous",  "unit": "dB", "range": [-9.0, 9.0],  "options": null,                    "default": 0.0 },
+      { "name": "level", "maps_to": "Gain.gain_db",        "type": "continuous",  "unit": "dB", "range": [-12.0, 12.0],"options": null,                    "default": 0.0 },
+      { "name": "mode",  "maps_to": "custom_clipping_curve","type": "categorical","unit": null, "range": null,          "options": ["Vintage", "Modern"], "default": "Vintage" }
+    ]
+  }
+}

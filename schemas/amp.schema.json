@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hai-project.example/schemas/amp.schema.json",
+  "title": "AmpConfig",
+  "type": "object",
+  "required": [
+    "amp_id",
+    "reference_amp",
+    "render_method",
+    "file_path",
+    "fixed"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "amp_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "reference_amp": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "required": [
+            "brand",
+            "model"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "brand": {
+              "type": "string",
+              "minLength": 1
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    },
+    "render_method": {
+      "enum": [
+        "impulse_response",
+        "nam_capture",
+        "pedalboard_synthetic"
+      ]
+    },
+    "file_path": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "fixed": {
+      "const": true
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "render_method": {
+            "enum": [
+              "impulse_response",
+              "nam_capture"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  ]
+}

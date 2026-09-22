@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hai-project.example/schemas/dry_sample.schema.json",
+  "title": "DrySample",
+  "type": "object",
+  "required": [
+    "sample_id",
+    "source_dataset",
+    "file_path",
+    "duration_sec",
+    "sample_rate",
+    "license"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "sample_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_dataset": {
+      "type": "string",
+      "minLength": 1
+    },
+    "file_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "duration_sec": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "sample_rate": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "license": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

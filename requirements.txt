@@ -1,0 +1,5 @@
+pedalboard
+numpy
+librosa
+soundfile
+jsonschema

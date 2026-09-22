@@ -1,0 +1,8 @@
+{
+  "sample_id": "dry_example_001",
+  "source_dataset": "example_placeholder",
+  "file_path": "data/dry/sample_example.wav",
+  "duration_sec": 2.0,
+  "sample_rate": 44100,
+  "license": "Placeholder: replace with actual license and attribution before use."
+}

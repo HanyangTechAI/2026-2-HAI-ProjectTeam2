@@ -1,0 +1,30 @@
+{
+  "amp_id": "fixed_amp_v1",
+  "chain": [
+    {
+      "effect_type": "compressor",
+      "values": {
+        "threshold_db": -18.0,
+        "ratio": 4.0,
+        "attack_ms": 5.0,
+        "release_ms": 100.0
+      }
+    },
+    {
+      "effect_type": "overdrive",
+      "values": {
+        "drive": 6.0,
+        "level": 0.0
+      }
+    },
+    {
+      "effect_type": "eq_3band",
+      "values": {
+        "low_gain_db": 0.0,
+        "mid_freq_hz": 1000.0,
+        "mid_gain_db": 0.0,
+        "high_gain_db": 0.0
+      }
+    }
+  ]
+}

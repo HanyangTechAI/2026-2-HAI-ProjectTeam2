@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hai-project.example/schemas/target_sample.schema.json",
+  "title": "TargetSample",
+  "type": "object",
+  "required": [
+    "target_id",
+    "is_synthetic",
+    "file_path"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "target_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "is_synthetic": {
+      "type": "boolean"
+    },
+    "dry_sample_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "ground_truth_chain": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "$ref": "chain.schema.json"
+        }
+      ]
+    },
+    "source_dataset": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1
+    },
+    "file_path": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "is_synthetic": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "dry_sample_id",
+          "ground_truth_chain"
+        ],
+        "properties": {
+          "dry_sample_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "ground_truth_chain": {
+            "$ref": "chain.schema.json"
+          }
+        }
+      },
+      "else": {
+        "required": [
+          "source_dataset"
+        ],
+        "properties": {
+          "source_dataset": {
+            "type": "string",
+            "minLength": 1
+          },
+          "dry_sample_id": {
+            "type": "null"
+          },
+          "ground_truth_chain": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ]
+}

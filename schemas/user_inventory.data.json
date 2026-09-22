@@ -1,0 +1,8 @@
+{
+  "user_id": "example_session",
+  "owned_effect_types": [
+    "compressor",
+    "overdrive",
+    "eq_3band"
+  ]
+}
