@@ -18,7 +18,7 @@ def dummy_render_effect(dry_audio, params):
 def run_search_pipeline():
     # 1. 가짜 오디오 데이터 준비
     np.random.seed(42)
-    # ⚠️ 중요: 팀원의 librosa.stft 함수가 작동하려면 오디오 길이가 충분히 길어야 합니다.
+    # 중요: 팀원의 librosa.stft 함수가 작동하려면 오디오 길이가 충분히 길어야 합니다.
     # 기존 100에서 4096으로 배열 길이를 늘려줍니다.
     dry_audio = np.random.rand(4096) 
     target_audio = dry_audio * 0.7 + 0.3  # 찾아야 할 정답: 드라이브 0.7, 톤 0.3
@@ -28,7 +28,7 @@ def run_search_pipeline():
         # 렌더링 모듈은 아직 없으니 가짜 렌더링 함수 유지
         wet = dummy_render_effect(dry_audio, params)
         
-        # ⭐ 가짜 평가 함수를 지우고, 팀원이 만든 진짜 함수(spectral_distance)로 교체!
+        # 가짜 평가 함수를 지우고, 팀원이 만든 진짜 함수(spectral_distance)로 교체!
         loss = spectral_distance(wet, target_audio)
         
         return loss
