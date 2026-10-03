@@ -6,7 +6,7 @@ SOURCE_AUDIO_DIR = "/Users/jinwon/Desktop/HAI_2026/IDMT-SMT-GUITAR_V2/dataset1/F
 SOURCE_ANNO_DIR = "/Users/jinwon/Desktop/HAI_2026/IDMT-SMT-GUITAR_V2/dataset1/Fender Strat Clean Neck SC/annotation"
 
 # 변환된 파일을 저장할 목적지 경로(Path)
-DEST_BASE_DIR = "../data/dry/Fender_Strat_Clean"
+DEST_BASE_DIR = "data/dry/Fender_Strat_Clean"
 DEST_AUDIO_DIR = os.path.join(DEST_BASE_DIR, "audio")
 DEST_ANNO_DIR = os.path.join(DEST_BASE_DIR, "annotation")
 
