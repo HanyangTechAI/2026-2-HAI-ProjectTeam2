@@ -1,3 +1,6 @@
+#python 3.11.17
+#이진원
+
 import os
 import shutil
 
