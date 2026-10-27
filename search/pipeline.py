@@ -1,41 +1,47 @@
 import numpy as np
 from scipy.optimize import minimize
+from metrics.spectral import spectral_distance
 
-# =======================================================
-# [1] 팀원들이 짠 실제 평가 함수 불러오기 (Import)
-# =======================================================
-# metrics 폴더의 spectral.py 파일에서 spectral_distance 함수를 가져옵니다.
-from metrics.spectral import spectral_distance 
+# 팀원이 작성한 scripts 폴더의 파일에서 렌더링 함수를 불러옵니다.
+from scripts.Create_Synthetic_pairs import apply_effects
 
-def dummy_render_effect(dry_audio, params):
-    """가짜 렌더링: 파라미터 값에 따라 오디오 배열을 단순 계산"""
-    wet_audio = dry_audio * params[0] + params[1]
-    return wet_audio
-
-# =======================================================
-# [2] 최적화 탐색 파이프라인
-# =======================================================
 def run_search_pipeline():
-    # 1. 가짜 오디오 데이터 준비
     np.random.seed(42)
-    # ⚠️ 중요: 팀원의 librosa.stft 함수가 작동하려면 오디오 길이가 충분히 길어야 합니다.
-    # 기존 100에서 4096으로 배열 길이를 늘려줍니다.
+    sample_rate = 22050
     dry_audio = np.random.rand(4096) 
-    target_audio = dry_audio * 0.7 + 0.3  # 찾아야 할 정답: 드라이브 0.7, 톤 0.3
     
-    # 2. 목적 함수 정의
+    # 임의의 정답(Target) 파라미터 세팅
+    target_comp = {"threshold_db": -20.0, "ratio": 4.0, "attack_ms": 10.0, "release_ms": 100.0}
+    target_drive = {"drive": 10.0, "level": 0.0}
+    
+    # 타겟 오디오 생성 (팀원의 진짜 렌더링 함수 사용)
+    target_audio = apply_effects(dry_audio, sample_rate, target_comp, "overdrive", target_drive)
+    
     def objective_function(params):
-        # 렌더링 모듈은 아직 없으니 가짜 렌더링 함수 유지
-        wet = dummy_render_effect(dry_audio, params)
+        # 탐색 알고리즘이 던져주는 1차원 숫자 배열(params)을 팀원 함수 규격(딕셔너리)에 맞게 변환
+        comp_params = {
+            "threshold_db": params[0],
+            "ratio": params[1],
+            "attack_ms": params[2],
+            "release_ms": params[3]
+        }
+        drive_params = {
+            "drive": params[4],
+            "level": params[5]
+        }
         
-        # ⭐ 가짜 평가 함수를 지우고, 팀원이 만든 진짜 함수(spectral_distance)로 교체!
+        # 가짜 렌더링을 지우고 팀원 함수로 교체!
+        wet = apply_effects(dry_audio, sample_rate, comp_params, "overdrive", drive_params)
         loss = spectral_distance(wet, target_audio)
         
         return loss
 
-    # 3. 탐색 시작
-    initial_params = [0.5, 0.5]
-    bounds = [(0.0, 1.0), (0.0, 1.0)]
+    # 탐색 시작점 및 각 노브별 허용 범위 (팀원 코드의 제한 범위 반영)
+    initial_params = [-30.0, 10.0, 50.0, 500.0, 5.0, 0.0]
+    bounds = [
+        (-60.0, 0.0), (1.0, 20.0), (0.1, 100.0), (10.0, 1000.0), # Compressor
+        (0.0, 15.0), (-12.0, 12.0)                               # Overdrive
+    ]
     
     print("탐색 엔진 가동 시작...")
     
@@ -48,7 +54,6 @@ def run_search_pipeline():
     
     print("-" * 30)
     print("탐색 완료!")
-    print(f"알고리즘이 찾아낸 노브 정답: {result.x}")
     print(f"최종 오차 점수: {result.fun:.6f}")
 
 if __name__ == "__main__":
