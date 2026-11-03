@@ -65,6 +65,24 @@ class ValidationTests(unittest.TestCase):
             with self.subTest(update=update), self.assertRaises(ValidationError):
                 self.check("user_inventory", self.data["user_inventory"] | update)
 
+    def test_effect_definition_rules(self):
+        mutations = [
+            lambda e: e["overdrive"]["params"][0].update(default=999),
+            lambda e: e["overdrive"]["params"][0].update(default="abc"),
+            lambda e: e["overdrive"]["params"][0].update(range=[15.0, 0.0]),
+            lambda e: e["overdrive"]["params"].append(dict(e["overdrive"]["params"][0])),
+            lambda e: e["overdrive"]["params"][0].update(scale="log"),
+            lambda e: e["fuzz"]["params"][3].update(default="Unknown"),
+            lambda e: e["fuzz"]["params"][3].update(scale="linear"),
+            lambda e: e["distortion"].update(fixed_params={"Compressor.ratio": 2.0}),
+        ]
+        for index, mutate in enumerate(mutations):
+            with self.subTest(index=index):
+                data = copy.deepcopy(self.data)
+                mutate(data["effects"])
+                with self.assertRaises(ValueError):
+                    validate_references(data)
+
     def test_cross_references_and_parameter_values(self):
         mutations = [
             lambda d: d["chain"].update(amp_id="unknown"),

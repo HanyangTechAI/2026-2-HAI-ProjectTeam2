@@ -29,9 +29,21 @@
         "source": { "type": "string", "enum": ["pedalboard", "vst"] },
         "class_name": { "type": "string" },
         "composite_of": {
+          "description": "composite 이펙터를 구성하는 pedalboard 클래스. 배열 순서가 곧 처리 순서다.",
           "oneOf": [
             { "type": "null" },
             { "type": "array", "items": { "type": "string" } }
+          ]
+        },
+        "fixed_params": {
+          "description": "탐색하지 않는 고정값. 키는 maps_to와 같은 \"클래스.속성\" 형식이다.",
+          "oneOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "propertyNames": { "pattern": "^[A-Za-z]+\\.[A-Za-z_]+$" },
+              "additionalProperties": { "type": ["number", "string", "boolean"] }
+            }
           ]
         },
         "params": {
@@ -51,6 +63,11 @@
         "maps_to": { "type": "string" },
         "type": { "type": "string", "enum": ["continuous", "categorical", "boolean"] },
         "unit": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
+        "scale": {
+          "description": "continuous 값을 [0, 1]로 정규화하거나 탐색할 때의 눈금. 생략하면 linear다.",
+          "type": "string",
+          "enum": ["linear", "log"]
+        },
         "range": {
           "oneOf": [
             { "type": "null" },

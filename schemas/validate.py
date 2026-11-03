@@ -21,6 +21,44 @@ def load_schemas(directory):
     return schemas, registry
 
 
+def validate_effects(effects):
+    """Check rules inside each effect definition that JSON Schema cannot express."""
+    for effect_type, effect in effects.items():
+        if effect["class_name"] == "composite":
+            classes = effect.get("composite_of") or []
+        else:
+            classes = [effect["class_name"]]
+        for key in effect.get("fixed_params") or {}:
+            if key.split(".")[0] not in classes:
+                raise ValueError(f"{effect_type}: fixed_params {key} does not belong to {classes}")
+
+        names = [param["name"] for param in effect["params"]]
+        if len(names) != len(set(names)):
+            raise ValueError(f"{effect_type}: duplicate parameter names")
+
+        for param in effect["params"]:
+            label = f"{effect_type}.{param['name']}"
+            default = param["default"]
+            if param["type"] != "continuous" and "scale" in param:
+                raise ValueError(f"{label}: scale applies only to continuous parameters")
+            if param["type"] == "continuous":
+                low, high = param["range"] or (None, None)
+                if low is None or low >= high:
+                    raise ValueError(f"{label}: range must be [min, max] with min < max")
+                if param.get("scale") == "log" and low <= 0:
+                    raise ValueError(f"{label}: log scale requires a positive range")
+                if isinstance(default, bool) or not isinstance(default, (int, float)) or not low <= default <= high:
+                    raise ValueError(f"{label}: default must be a number within {param['range']}")
+            elif param["type"] == "categorical":
+                options = param["options"] or []
+                if not options or len(options) != len(set(options)):
+                    raise ValueError(f"{label}: options must be non-empty and unique")
+                if default not in options:
+                    raise ValueError(f"{label}: default must be one of {options}")
+            elif not isinstance(default, bool):
+                raise ValueError(f"{label}: default must be a boolean")
+
+
 def validate_chain(chain, effects, amp):
     if chain["amp_id"] != amp["amp_id"]:
         raise ValueError(f"Unknown amp_id: {chain['amp_id']}")
@@ -43,6 +81,7 @@ def validate_chain(chain, effects, amp):
 
 def validate_references(data):
     effects = data["effects"]
+    validate_effects(effects)
     validate_chain(data["chain"], effects, data["amp"])
     target = data["target_sample"]
     if target["is_synthetic"]:
