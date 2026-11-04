@@ -1,6 +1,7 @@
-"""Check the baseline spectral distance with deterministic signals."""
+"""Check spectral distance with deterministic signals (original seven kept)."""
 
 import unittest
+import warnings
 
 import numpy as np
 
@@ -45,6 +46,165 @@ class SpectralDistanceTests(unittest.TestCase):
     def test_identical_silence(self):
         silence = np.zeros_like(self.x)
         self.assertEqual(spectral_distance(silence, silence.copy()), 0.0)
+
+
+class SpectralFloorTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.time = np.arange(22050, dtype=np.float64) / 22050
+        cls.tone = 0.5 * np.sin(2 * np.pi * 440 * cls.time)
+        cls.noise = np.random.default_rng(42).normal(0, 1e-6, cls.time.size)
+
+    def test_silence_and_tiny_noise(self):
+        self.assertEqual(spectral_distance(np.zeros_like(self.noise), self.noise), 0.0)
+
+    def test_tone_and_tiny_noise(self):
+        tiny = spectral_distance(self.tone, self.tone + self.noise)
+        volume = spectral_distance(self.tone, 0.5 * self.tone)
+        self.assertLess(tiny, volume)
+
+    def test_quiet_coherent_tone_remains_distinguishable(self):
+        quiet = 1e-5 * np.sin(2 * np.pi * (22050 * 41 / 2048) * self.time)
+        self.assertGreater(spectral_distance(np.zeros_like(quiet), quiet), 1e-3)
+
+    def test_meaningful_broadband_volume_difference(self):
+        noise = np.random.default_rng(43).normal(0, 0.1, self.time.size)
+        # Bins far above the floor retain the analytic ln(2) gain difference.
+        self.assertAlmostEqual(spectral_distance(noise, noise * 0.5), np.log(2), places=4)
+
+    def test_frequency_difference_exceeds_tiny_noise(self):
+        other = 0.5 * np.sin(2 * np.pi * 880 * self.time)
+        self.assertGreater(spectral_distance(self.tone, other),
+                           spectral_distance(self.tone, self.tone + self.noise))
+
+    def test_silence_tail_noise(self):
+        signal = np.concatenate([self.tone, np.zeros_like(self.tone)])
+        altered = signal.copy()
+        altered[len(self.tone):] = self.noise
+        self.assertLess(spectral_distance(signal, altered), spectral_distance(signal, signal * 0.5))
+
+    def test_empty_input(self):
+        for x, y in ((np.array([]), np.array([])), (np.array([]), self.tone)):
+            with self.subTest(lengths=(len(x), len(y))), self.assertRaises(ValueError):
+                spectral_distance(x, y)
+
+    def test_nonfinite_inputs_on_either_side(self):
+        for value in (np.nan, np.inf, -np.inf):
+            bad = self.tone.copy()
+            bad[123] = value
+            for x, y in ((bad, self.tone), (self.tone, bad)):
+                with self.subTest(value=value), self.assertRaises(ValueError):
+                    spectral_distance(x, y)
+
+    def test_scalar_and_higher_dimensions(self):
+        for bad in (np.array(1.0), np.zeros((1, 1, 1))):
+            with self.subTest(shape=bad.shape), self.assertRaises(ValueError):
+                spectral_distance(bad, bad)
+
+    def test_nonnumeric_and_complex_inputs(self):
+        for bad in (np.array(["1"]), np.array([True]), np.array([1j]), np.array([None])):
+            with self.subTest(dtype=bad.dtype), self.assertRaises(ValueError):
+                spectral_distance(bad, bad)
+
+    def test_float32_and_float64_finite_float_return(self):
+        for dtype in (np.float32, np.float64):
+            x = self.tone.astype(dtype)
+            distance = spectral_distance(x, self.noise.astype(dtype))
+            self.assertIs(type(distance), float)
+            self.assertTrue(np.isfinite(distance))
+            self.assertGreaterEqual(distance, 0)
+            self.assertEqual(distance, spectral_distance(self.noise.astype(dtype), x))
+
+    def test_short_nonempty_input(self):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)  # librosa warns about n_fft > length
+            self.assertEqual(spectral_distance(np.zeros(1), np.zeros(1)), 0.0)
+
+    def test_stft_overflow_rejected(self):
+        huge = np.full(4096, 1e308)
+        with self.assertRaises(ValueError):
+            spectral_distance(huge, huge)
+
+
+class SpectralSilenceDurationTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.rate = 22050
+        time = np.arange(cls.rate) / cls.rate
+        cls.tone = 0.5 * np.sin(2 * np.pi * 440 * time)
+
+    def test_appended_silence_does_not_dilute_gain_difference(self):
+        baseline = spectral_distance(self.tone, self.tone * 0.5)
+        for seconds in (1, 2, 5, 20):
+            padded = np.pad(self.tone, (0, seconds * self.rate))
+            with self.subTest(seconds=seconds):
+                self.assertAlmostEqual(spectral_distance(padded, padded * 0.5), baseline, places=12)
+
+    def test_non_hop_aligned_silence_lengths(self):
+        baseline = spectral_distance(self.tone, self.tone * 0.5)
+        for samples in (1, 99, 511, 513, 22051):
+            padded = np.pad(self.tone, (0, samples))
+            with self.subTest(samples=samples):
+                self.assertAlmostEqual(spectral_distance(padded, padded * 0.5), baseline, places=12)
+
+    def test_leading_silence_on_the_same_frame_grid(self):
+        baseline = spectral_distance(self.tone, self.tone * 0.5)
+        for samples in (512, 4096, 512 * 100):
+            padded = np.pad(self.tone, (samples, 0))
+            with self.subTest(samples=samples):
+                self.assertAlmostEqual(spectral_distance(padded, padded * 0.5), baseline, places=12)
+
+    def test_one_sided_signal_is_included_and_symmetric(self):
+        silence = np.zeros_like(self.tone)
+        baseline = spectral_distance(self.tone, silence)
+        self.assertGreater(baseline, 0)
+        for seconds in (0, 2, 5):
+            a, b = np.pad(self.tone, (0, seconds * self.rate)), np.pad(silence, (0, seconds * self.rate))
+            distance = spectral_distance(a, b)
+            self.assertIs(type(distance), float)
+            self.assertEqual(distance, spectral_distance(b, a))
+            self.assertAlmostEqual(distance, baseline, places=12)
+
+    def test_extra_sound_after_a_common_burst_is_not_discarded(self):
+        silence = np.zeros_like(self.tone)
+        truth = np.concatenate([self.tone, silence, silence])
+        extra_sound = np.concatenate([self.tone, silence, self.tone])
+        self.assertEqual(spectral_distance(truth, truth), 0)
+        self.assertGreater(spectral_distance(truth, extra_sound), 0)
+        self.assertEqual(spectral_distance(truth, extra_sound), spectral_distance(extra_sound, truth))
+
+    def test_disjoint_one_sided_bursts_are_not_ignored(self):
+        silence = np.zeros_like(self.tone)
+        a = np.concatenate([self.tone, silence, silence])
+        b = np.concatenate([silence, silence, self.tone])
+        self.assertGreater(spectral_distance(a, b), 0)
+
+    def test_quiet_one_sided_burst_has_nonzero_weight(self):
+        silence = np.zeros_like(self.tone)
+        a = np.concatenate([self.tone, silence, silence])
+        b = np.concatenate([self.tone, silence, self.tone * 2e-5])
+        self.assertGreater(spectral_distance(a, b), 0)
+
+    def test_long_silence_and_independent_subfloor_noise(self):
+        rng = np.random.default_rng(45)
+        silence = np.zeros(self.rate * 6)
+        a, b = rng.normal(0, 1e-6, silence.size), rng.normal(0, 1e-6, silence.size)
+        for x, y in ((silence, silence), (silence, a), (a, b)):
+            self.assertEqual(spectral_distance(x, y), 0.0)
+
+    def test_subfloor_noise_tail_has_small_effect(self):
+        baseline = spectral_distance(self.tone, self.tone * 0.5)
+        rng = np.random.default_rng(46)
+        for seconds in (1, 2, 5):
+            a = np.concatenate([self.tone, rng.normal(0, 1e-6, self.rate * seconds)])
+            b = np.concatenate([self.tone * 0.5, rng.normal(0, 1e-6, self.rate * seconds)])
+            self.assertAlmostEqual(spectral_distance(a, b), baseline, delta=1e-5)
+
+    def test_large_finite_inputs_do_not_overflow_energy_weights(self):
+        distance = spectral_distance(self.tone * 1e160, self.tone * 0.5e160)
+        self.assertIs(type(distance), float)
+        self.assertTrue(np.isfinite(distance))
+        self.assertGreater(distance, 0)
 
 
 if __name__ == "__main__":
