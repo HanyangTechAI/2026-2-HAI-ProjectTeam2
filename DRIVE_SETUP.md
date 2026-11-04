@@ -46,6 +46,7 @@ pip install -r requirements.txt
 **Windows** (PowerShell 말고 **cmd**에서 실행)
 
 ```
+mklink /J data\raw "<드라이브 경로>\data\raw"
 mklink /J data\dry\Fender_Strat_Clean\audio "<드라이브 경로>\data\dry\Fender_Strat_Clean\audio"
 mklink /J data\synthetic\Fender_Strat_Clean "<드라이브 경로>\data\synthetic\Fender_Strat_Clean"
 ```
@@ -54,6 +55,7 @@ mklink /J data\synthetic\Fender_Strat_Clean "<드라이브 경로>\data\syntheti
 
 ```bash
 DRIVE="<드라이브 경로>"
+ln -s "$DRIVE/data/raw" data/raw
 ln -s "$DRIVE/data/dry/Fender_Strat_Clean/audio" data/dry/Fender_Strat_Clean/audio
 ln -s "$DRIVE/data/synthetic/Fender_Strat_Clean" data/synthetic/Fender_Strat_Clean
 ```
