@@ -1,9 +1,9 @@
 # 데이터 관리
 
-큰 용량 파일은 Drive에 보관하고 GitHub엔 작은 샘플만 올립니다. 원본 데이터셋, 합성 오디오, 음원 분리 결과 및 모델 체크포인트는 Drive에서 관리합니다.
+오디오, 원본 데이터셋, 모델 체크포인트는 공유 드라이브에 보관하고 GitHub에는 올리지 않습니다. [DRIVE_SETUP.md](../DRIVE_SETUP.md)대로 연결하면 코드는 아래 경로로 드라이브의 파일을 읽고 씁니다.
 
-- `dry/`: GuitarSet 등에서 준비한 dry 기타 샘플
+- `dry/`: dry 기타 샘플 (IDMT-SMT-Guitar V2)
 - `synthetic/`: 합성한 (dry, params, wet) 페어
 - `separated/`: 음원 분리 결과물
 
-오디오와 체크포인트는 기본적으로 Git에서 제외합니다. `dry/sample_*.wav`만 테스트용 예외이며, 커밋 전 길이가 1~2초인 소량의 작은 샘플인지 확인하세요. `.gitignore`는 파일 길이나 용량을 검사하지 않습니다.
+주석(xml)과 README처럼 작은 텍스트 파일만 GitHub에 둡니다.
