@@ -12,13 +12,7 @@
 
 ## 폴더 구조
 
-- `Fender_Strat_Clean/audio/`: `sample_*.wav` (Git에 포함되지 않음)
-- `Fender_Strat_Clean/annotation/`: `sample_*.xml`
+- `Fender_Strat_Clean/audio/`: `sample_*.wav` (공유 드라이브, [DRIVE_SETUP.md](../../DRIVE_SETUP.md)로 연결)
+- `Fender_Strat_Clean/annotation/`: `sample_*.xml` (GitHub)
 
-## 준비 방법
-
-1. Zenodo에서 zip을 받아 압축을 풉니다.
-2. `scripts/SaveAs_Sample_Files.py`의 `SOURCE_AUDIO_DIR`, `SOURCE_ANNO_DIR`를 내 PC의 원본 경로로 바꿉니다.
-3. 저장소 루트에서 `python scripts/SaveAs_Sample_Files.py`를 실행합니다.
-
-> wav 공유 방식(GitHub / Drive)은 논의 중입니다.
+원본 zip은 공유 드라이브의 `data/raw/`에 있습니다.

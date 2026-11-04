@@ -34,6 +34,8 @@ dry 신호 `x_dry`, 목표 신호 `x_ref`, 사용자 보유 이펙터 집합 `E`
 
 ## 실행 방법
 
+처음이라면 [DRIVE_SETUP.md](DRIVE_SETUP.md)를 따라 환경을 세팅하세요.
+
 ```bash
 pip install -r requirements.txt
 python schemas/validate.py
