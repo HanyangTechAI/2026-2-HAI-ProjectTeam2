@@ -56,5 +56,10 @@ Thumbs.db
 !/data/dry/sample_*.wav
 
 # 공유 드라이브에서 연결한 데이터 폴더 (DRIVE_SETUP.md 참고)
+/data/raw
 /data/dry/*/audio/
 /data/synthetic/*/
+
+# 실행 결과물 (search/pipeline.py 등)
+/outputs/
+/data/synthetic_test/
