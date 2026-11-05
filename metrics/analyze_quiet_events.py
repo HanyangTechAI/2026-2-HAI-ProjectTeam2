@@ -12,7 +12,7 @@ import librosa
 import numpy as np
 
 from metrics.spectral import (
-    HOP_LENGTH, MAGNITUDE_FLOOR, METRIC_VERSION, N_FFT, spectral_distance,
+    HOP_LENGTH, MAGNITUDE_FLOOR, METRIC_VERSION, N_FFT, NOISE_FLOOR_DB, spectral_distance,
 )
 
 
@@ -145,6 +145,7 @@ def main():
                         **compare_aggregations(x, y, event)})
     print(json.dumps({
         "metric_version": METRIC_VERSION,
+        "noise_floor_db": NOISE_FLOOR_DB, "raw_magnitude_floor": MAGNITUDE_FLOOR,
         "versions": {"python": platform.python_version(), "numpy": np.__version__, "librosa": librosa.__version__},
         "sample_rate": 22050, "frequency_hz": 440,
         "matched_head_amplitude": 0.5,

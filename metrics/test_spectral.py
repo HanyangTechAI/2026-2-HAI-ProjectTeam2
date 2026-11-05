@@ -64,13 +64,20 @@ class SpectralFloorTests(unittest.TestCase):
         self.assertLess(tiny, volume)
 
     def test_quiet_coherent_tone_remains_distinguishable(self):
-        quiet = 1e-5 * np.sin(2 * np.pi * (22050 * 41 / 2048) * self.time)
+        # Preserve an above-floor quiet tone; the old 1e-5 tone is now lost.
+        # That exact loss is checked separately below rather than hidden.
+        quiet = 1e-3 * np.sin(2 * np.pi * (22050 * 41 / 2048) * self.time)
         self.assertGreater(spectral_distance(np.zeros_like(quiet), quiet), 1e-3)
 
     def test_meaningful_broadband_volume_difference(self):
         noise = np.random.default_rng(43).normal(0, 0.1, self.time.size)
-        # Bins far above the floor retain the analytic ln(2) gain difference.
-        self.assertAlmostEqual(spectral_distance(noise, noise * 0.5), np.log(2), places=4)
+        # Some random bins now cross the -80 dB floor. For a gain of 1/2,
+        # each clamped log error is in [0, ln(2)], not identically ln(2).
+        # An unclipped broadband control below still requires exact ln(2).
+        distance = spectral_distance(noise, noise * 0.5)
+        self.assertGreater(distance, 0.0)
+        self.assertLess(distance, np.log(2))
+        self.assertAlmostEqual(distance, 0.6924778711500804, places=10)
 
     def test_frequency_difference_exceeds_tiny_noise(self):
         other = 0.5 * np.sin(2 * np.pi * 880 * self.time)
@@ -182,7 +189,9 @@ class SpectralSilenceDurationTests(unittest.TestCase):
     def test_quiet_one_sided_burst_has_nonzero_weight(self):
         silence = np.zeros_like(self.tone)
         a = np.concatenate([self.tone, silence, silence])
-        b = np.concatenate([self.tone, silence, self.tone * 2e-5])
+        # Peak amplitude 1e-3 remains above the new floor. The old 1e-5
+        # event is explicitly expected to disappear in a separate test.
+        b = np.concatenate([self.tone, silence, self.tone * 2e-3])
         self.assertGreater(spectral_distance(a, b), 0)
 
     def test_long_silence_and_independent_subfloor_noise(self):
@@ -205,6 +214,61 @@ class SpectralSilenceDurationTests(unittest.TestCase):
         self.assertIs(type(distance), float)
         self.assertTrue(np.isfinite(distance))
         self.assertGreater(distance, 0)
+
+
+class SpectralFloor80Tests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.time = np.arange(22050) / 22050
+        cls.bin_tone = np.sin(2 * np.pi * (22050 * 41 / 2048) * cls.time)
+
+    def test_requested_floor_and_configuration_id(self):
+        from spectral import MAGNITUDE_FLOOR, METRIC_VERSION, NOISE_FLOOR_DB
+        self.assertEqual(NOISE_FLOOR_DB, -80.0)
+        self.assertAlmostEqual(MAGNITUDE_FLOOR, 0.0512, places=15)
+        self.assertEqual(METRIC_VERSION, "log_stft_joint_active_energy_v2_floor_m80db")
+
+    def test_previous_quiet_tone_is_exactly_lost(self):
+        quiet = 1e-5 * self.bin_tone
+        self.assertGreater(float(np.max(np.abs(quiet))), 0)
+        self.assertEqual(spectral_distance(np.zeros_like(quiet), quiet), 0.0)
+
+    def test_quiet_tones_above_and_below_new_floor(self):
+        silence = np.zeros_like(self.bin_tone)
+        self.assertEqual(spectral_distance(silence, 5e-5 * self.bin_tone), 0.0)
+        self.assertGreater(spectral_distance(silence, 2e-4 * self.bin_tone), 0.0)
+
+    def test_previous_one_sided_quiet_event_is_lost(self):
+        head = 0.5 * np.sin(2 * np.pi * 440 * self.time)
+        silence = np.zeros_like(head)
+        x = np.concatenate([head, silence, silence])
+        y = np.concatenate([head, silence, 1e-5 * self.bin_tone])
+        self.assertEqual(spectral_distance(x, y), 0.0)
+        self.assertEqual(spectral_distance(y, x), 0.0)
+
+    def test_unclipped_broadband_gain_retains_exact_log_ratio(self):
+        # An aligned impulse has equal magnitudes in every bin. Its active
+        # Hann windows have magnitudes 1 or 0.5, so BOTH gains exceed 0.0512.
+        impulse = np.zeros(4096)
+        impulse[2048] = 1.0
+        self.assertAlmostEqual(spectral_distance(impulse, impulse * 0.5), np.log(2), places=12)
+
+    def test_two_different_subfloor_frequencies_are_indistinguishable(self):
+        x = 1e-5 * self.bin_tone
+        y = 1e-5 * np.sin(2 * np.pi * (22050 * 82 / 2048) * self.time)
+        self.assertFalse(np.array_equal(x, y))
+        self.assertEqual(spectral_distance(x, y), 0.0)
+
+    def test_silence_extension_preserves_lost_and_retained_quiet_cases(self):
+        for amplitude in (1e-5, 1e-3):
+            tone = amplitude * self.bin_tone
+            silence = np.zeros_like(tone)
+            baseline = spectral_distance(silence, tone)
+            for seconds in (2, 5):
+                with self.subTest(amplitude=amplitude, seconds=seconds):
+                    self.assertAlmostEqual(spectral_distance(np.pad(silence, (0, seconds * 22050)),
+                                                           np.pad(tone, (0, seconds * 22050))),
+                                           baseline, places=12)
 
 
 if __name__ == "__main__":

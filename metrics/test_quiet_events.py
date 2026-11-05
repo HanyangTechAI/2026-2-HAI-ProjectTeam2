@@ -10,20 +10,26 @@ from metrics.spectral import spectral_distance
 
 class QuietEventAuditTests(unittest.TestCase):
     def test_reproduces_reported_amplitude_examples(self):
-        for amplitude, expected in ((0.5, 0.2686390513619351),
-                                    (0.05, 0.002437709232012488),
-                                    (0.005, 8.735230951547983e-6)):
+        # Fixed -80 dB results; the -120 dB measurements remain in the report.
+        for amplitude, expected in ((0.5, 0.04368052239822288),
+                                    (0.05, 0.00032929048475491285),
+                                    (0.005, 1.1223283074645755e-6)):
             x, y, _ = make_case(amplitude=amplitude)
             with self.subTest(amplitude=amplitude):
                 self.assertAlmostEqual(spectral_distance(x, y), expected, delta=1e-10)
 
     def test_energy_share_matches_squared_amplitude_ratio(self):
-        # Equal-duration, separated tones have energy proportional to A**2.
-        # This verifies the mechanism, not whether the resulting score is acceptable.
-        for amplitude in (0.5, 0.05, 0.005):
-            x, y, event = make_case(amplitude=amplitude)
-            result = compare_aggregations(x, y, event)
-            relative_energy = (amplitude / 0.5) ** 2
+        # Use aligned, flat-spectrum impulses to isolate the quadratic law.
+        # The weakest active bin is 0.1 > 0.0512, so no frame is removed by
+        # the floor. Sine edge frames can be removed at -80 dB and do NOT
+        # obey the unmasked full-waveform ratio exactly. Precision is kept.
+        for amplitude in (20.0, 2.0, 0.2):
+            x = np.zeros(8192)
+            x[2048] = 20.0
+            y = x.copy()
+            y[6144] = amplitude
+            result = compare_aggregations(x, y, (4096, 8192))
+            relative_energy = (amplitude / 20.0) ** 2
             self.assertAlmostEqual(result["event_energy_share"], relative_energy / (1 + relative_energy), places=9)
 
     def test_local_error_explains_small_global_score(self):
@@ -42,8 +48,9 @@ class QuietEventAuditTests(unittest.TestCase):
             self.assertIs(type(score), float)
             self.assertTrue(np.isfinite(score))
             scores.append(score)
-        self.assertEqual(scores[0], 0)
-        self.assertTrue(all(a < b for a, b in zip(scores, scores[1:])))
+        # Zero and the old 1e-5 event now coincide because of the floor.
+        self.assertEqual(scores[:2], [0.0, 0.0])
+        self.assertTrue(all(a < b for a, b in zip(scores[1:], scores[2:])))
 
     def test_longer_sustain_increases_event_contribution(self):
         scores, shares = [], []
