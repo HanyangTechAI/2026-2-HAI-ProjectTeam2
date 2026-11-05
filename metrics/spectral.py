@@ -9,9 +9,9 @@ HOP_LENGTH = 512
 # A unit-amplitude bin-centred sine has Hann-windowed magnitude N_FFT / 4.
 # This is a fixed reference, never a peak measured independently per input.
 STFT_SINE_REFERENCE = N_FFT / 4
-NOISE_FLOOR_DB = -120.0
+NOISE_FLOOR_DB = -80.0
 MAGNITUDE_FLOOR = STFT_SINE_REFERENCE * 10 ** (NOISE_FLOOR_DB / 20)
-METRIC_VERSION = "log_stft_joint_active_energy_v2"
+METRIC_VERSION = "log_stft_joint_active_energy_v2_floor_m80db"
 
 
 def _waveform(value):
@@ -54,7 +54,7 @@ def spectral_distance(x: np.ndarray, y: np.ndarray) -> float:
     Average active frame errors with weight max(energy_x, energy_y), so
     common silence adds no weight and one-sided sounds remain included.
     Return a Python float in natural-log units (not dB), or 0.0 when neither
-    input has an active frame. v1 thresholds must be recalibrated for v2.
+    input has an active frame. Thresholds for older floor settings are invalid.
     Assume a shared audio sample scale, conventionally full scale = 1.
     Inputs must be finite, non-empty, real 1D arrays of equal length.
     Invalid input or STFT overflow raises ValueError; no amplitude rescaling

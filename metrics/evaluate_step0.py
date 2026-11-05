@@ -120,13 +120,14 @@ def silence_extension_sweep():
     rate = 22050
     time = np.arange(rate) / rate
     tone = 0.5 * np.sin(2 * np.pi * 440 * time)
+    legacy_floor = (N_FFT / 4) * 10 ** (-120 / 20)
     rows = []
     for seconds in (0, 1, 2, 5):
         x = np.pad(tone, (0, seconds * rate))
         a, b = np.abs(librosa.stft(x)), np.abs(librosa.stft(x * 0.5))
-        errors = np.mean(np.abs(np.log(np.maximum(a, MAGNITUDE_FLOOR))
-                                - np.log(np.maximum(b, MAGNITUDE_FLOOR))), axis=0)
-        active = np.any(np.maximum(a, b) > MAGNITUDE_FLOOR, axis=0)
+        errors = np.mean(np.abs(np.log(np.maximum(a, legacy_floor))
+                                - np.log(np.maximum(b, legacy_floor))), axis=0)
+        active = np.any(np.maximum(a, b) > legacy_floor, axis=0)
         reference = max(float(np.max(a)), float(np.max(b)))
         weights = np.maximum(np.sum((a / reference) ** 2, axis=0),
                              np.sum((b / reference) ** 2, axis=0)) * active
@@ -155,7 +156,7 @@ def floor_sweep():
     for name, x, y in cases:
         a, b = np.abs(librosa.stft(x)), np.abs(librosa.stft(y))
         row = {"case": name, "before": float(np.mean(np.abs(np.log(a + 1e-8) - np.log(b + 1e-8))))}
-        for db in (-140, -120, -100):
+        for db in (-140, -120, -100, -80):
             floor = (N_FFT / 4) * 10 ** (db / 20)
             row[str(db)] = float(np.mean(np.abs(np.log(np.maximum(a, floor)) - np.log(np.maximum(b, floor)))))
         row["after"] = spectral_distance(x, y)
@@ -166,9 +167,9 @@ def floor_sweep():
 def main():
     render = _renderer()
     partitions = {}
-    # Fresh, disjoint source seeds fixed before inspecting v2 holdout scores.
-    # Previous v1 calibration/holdout used 100..109 and 200..209 respectively.
-    for partition, seeds in (("calibration", range(300, 310)), ("holdout", range(400, 410))):
+    # Fresh source groups fixed for the requested -80 dB setting. Previous
+    # -120 dB calibration/holdout used 300..309 and 400..409 respectively.
+    for partition, seeds in (("calibration", range(500, 510)), ("holdout", range(600, 610))):
         records = []
         for seed in seeds:
             for name, variant, target, output, expected in _duration_variants(seed, render):
@@ -205,11 +206,13 @@ def main():
     print(json.dumps({
         "metric_version": METRIC_VERSION,
         "threshold_scope": {
-            "purpose": "Original synthetic benchmark only; not a general audio acceptance rule",
+            "purpose": "Configured synthetic benchmark only; not a general audio acceptance rule",
             "quiet_local_events": "Not validated; see python -m metrics.analyze_quiet_events",
             "perceptual_acceptability": None,
         },
         "invalidated_v1_threshold": 0.049579072722078545,
+        "invalidated_v2_m120_threshold": 0.0431711644550397,
+        "source_seeds": {"calibration": [500, 509], "holdout": [600, 609]},
         "versions": {"python": platform.python_version(), "numpy": np.__version__,
                      "librosa": librosa.__version__, "pedalboard": pedalboard.__version__,
                      "scipy": scipy.__version__},
@@ -218,7 +221,7 @@ def main():
         "noise_floor_db": NOISE_FLOOR_DB, "raw_magnitude_floor": MAGNITUDE_FLOOR,
         "aggregation": "union-active frames; max of input frame energies; complete both boundary windows",
         "silence_extension_sweep": duration_sweep,
-        "floor_sweep_note": "before=epsilon baseline; -140/-120/-100=v1 all-frame means; after=current v2",
+        "floor_sweep_note": "before=epsilon baseline; dB columns=all-frame means; after=current configured v2",
         "floor_sweep": floor_sweep(), "knob_examples": knob_examples,
         "renderer_limit_example": {"case": "fuzz Vintage to Modern", "audio_distance": mode_distance,
                                    "knobs_match": False,
