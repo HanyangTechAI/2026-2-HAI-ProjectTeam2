@@ -1,13 +1,13 @@
 """
 search/pipeline.py
 
-Step 0 baseline: Gradient-free parameter search (Random Search vs CMA-ES)
-for the Compressor -> Overdrive effect chain.
+Step 0 baseline: Gradient-free parameter search (Random Search vs Restart-CMA-ES)
+for the Overdrive effect (Compressor bypassed).
 
 Usage (프로젝트 루트에서)
 -------------------------
 python -m search.pipeline
-python -m search.pipeline --budgets 50 200 1000 --seeds 10
+python -m search.pipeline --budgets 200 --restarts 4 --seeds 3
 python -m search.pipeline --no-sensitivity
 """
 import os
@@ -21,20 +21,15 @@ from metrics.spectral import spectral_distance
 from scripts.Create_Synthetic_pairs import apply_effects
 
 DRY_AUDIO_DIR = "data/dry/Fender_Strat_Clean/audio"
-SYNTH_DIR = "data/synthetic_test"   # 합성 테스트 음원 전용 (실제 데이터 폴더와 분리, .gitignore 권장)
 OUTPUT_DIR = "outputs/search"
 PENALTY = 1e3
 
 # ----------------------------------------------------------------------
-# 파라미터 정의: (이름, 하한, 상한, log 스케일 여부)
+# 파라미터 정의: 컴프레서 제거 -> Overdrive (drive, level) 2차원 탐색
 # ----------------------------------------------------------------------
 PARAM_SPECS = [
-    ("Comp: threshold_db", -60.0,    0.0, False),
-    ("Comp: ratio",          1.0,   20.0, False),
-    ("Comp: attack_ms",      0.1,  100.0, True),
-    ("Comp: release_ms",    10.0, 1000.0, True),
-    ("OD  : drive",          0.0,   15.0, False),
-    ("OD  : level",        -12.0,   12.0, False),
+    ("OD  : drive",   0.0, 15.0, False),
+    ("OD  : level", -12.0, 12.0, False),
 ]
 PARAM_NAMES = [s[0] for s in PARAM_SPECS]
 LOWS = np.array([s[1] for s in PARAM_SPECS], dtype=float)
@@ -42,14 +37,23 @@ HIGHS = np.array([s[2] for s in PARAM_SPECS], dtype=float)
 IS_LOG = np.array([s[3] for s in PARAM_SPECS], dtype=bool)
 DIM = len(PARAM_SPECS)
 
-TARGET_PARAMS = np.array([-20.0, 4.0, 10.0, 100.0, 10.0, 0.0])
+# 찾아야 할 Overdrive 정답 노브 값 (drive=10.0, level=0.0)
+TARGET_PARAMS = np.array([10.0, 0.0])
+
+# 컴프레서 무력화(Bypass)용 고정 파라미터 (threshold=0dB, ratio=1.0이면 압축 안 함)
+BYPASS_COMP_PARAMS = {
+    "threshold_db": 0.0,
+    "ratio": 1.0,
+    "attack_ms": 10.0,
+    "release_ms": 100.0,
+}
 
 
 # ----------------------------------------------------------------------
-# 정규화 / 역정규화 ([0,1]^6 <-> 실제 노브 값)
+# 정규화 / 역정규화 ([0,1]^2 <-> 실제 노브 값)
 # ----------------------------------------------------------------------
 def denormalize(x):
-    """[0,1] 정규화 벡터 -> 실제 파라미터 (시간 상수는 log 스케일)."""
+    """[0,1] 정규화 벡터 -> 실제 파라미터."""
     x = np.asarray(x, dtype=float)
     lin = LOWS + x * (HIGHS - LOWS)
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -69,52 +73,19 @@ def normalize(params):
 
 
 # ----------------------------------------------------------------------
-# 데이터 로딩
+# 실제 Dry 오디오 데이터 로딩 (가짜 합성음 폴백 제거)
 # ----------------------------------------------------------------------
-def generate_realistic_guitar_wav(filepath, sr=22050, duration_sec=1.5):
-    """
-    [테스트 전용] 다중 배음 + 피킹 엔벨로프를 가진 합성 기타음 생성.
-    컴프레서/드라이브가 사인파보다 실제 기타에 가깝게 반응하도록 한 것일 뿐,
-    실제 기타 녹음을 대체할 수 없다. 베이스라인 결과에는 사용하지 말 것.
-    """
-    os.makedirs(os.path.dirname(filepath), exist_ok=True)
-    t = np.linspace(0, duration_sec, int(sr * duration_sec), endpoint=False)
-    audio = np.zeros_like(t)
-
-    # 3번의 피킹 (점점 강하게 -> 컴프레서 작동 유도)
-    notes = [(0.05, 110.0, 0.35), (0.5, 146.83, 0.65), (0.95, 196.0, 0.95)]
-    for onset, freq, amp in notes:
-        mask = t >= onset
-        t_rel = t[mask] - onset
-        env = (1.0 - np.exp(-t_rel / 0.005)) * np.exp(-t_rel / 0.25)
-        sig = np.zeros_like(t_rel)
-        for h in range(1, 10):
-            sig += (1.0 / (h ** 1.15)) * np.sin(2 * np.pi * freq * h * t_rel)
-        audio[mask] += amp * env * sig
-
-    audio = audio / (np.max(np.abs(audio)) + 1e-8) * 0.85
-    sf.write(filepath, audio.astype(np.float32), sr)
-    return filepath
-
-
 def load_real_dry_sample(duration_sec=1.0):
     """
-    실제 Dry wav 로드 (에너지가 가장 큰 duration_sec 구간 사용).
-    wav가 없으면 별도 폴더(SYNTH_DIR)의 합성음으로 대체하며, 경고와 [SYNTHETIC] 태그를 남긴다.
+    data/dry/Fender_Strat_Clean/audio 경로에서 실제 .wav 파일을 로드합니다.
+    가장 에너지가 큰 duration_sec(1초) 구간을 선택합니다.
     """
-    wav_files = sorted(glob.glob(os.path.join(DRY_AUDIO_DIR, "*.wav")))  # makedirs 하지 않음
-    is_synthetic = False
-
+    wav_files = sorted(glob.glob(os.path.join(DRY_AUDIO_DIR, "*.wav")))
     if not wav_files:
-        print("=" * 70)
-        print(f"[WARNING] '{DRY_AUDIO_DIR}'에서 .wav를 찾지 못했습니다 (경로 확인!).")
-        print("[WARNING] 합성 기타음으로 대체합니다. 이 결과는 베이스라인으로 쓰지 마세요.")
-        print("=" * 70)
-        synth_path = os.path.join(SYNTH_DIR, "sample_guitar_dry.wav")
-        if not os.path.exists(synth_path):
-            generate_realistic_guitar_wav(synth_path)
-        wav_files = [synth_path]
-        is_synthetic = True
+        raise FileNotFoundError(
+            f"\n[ERROR] '{DRY_AUDIO_DIR}' 폴더에 실제 .wav 파일이 없습니다!\n"
+            "구글 드라이브 공유 폴더(Fender_Strat_Clean/audio)에서 .wav 샘플을 다운받아 위 경로에 넣어주세요."
+        )
 
     path = wav_files[0]
     audio, sr = sf.read(path, dtype="float32")
@@ -129,26 +100,20 @@ def load_real_dry_sample(duration_sec=1.0):
         s = int(starts[int(np.argmax(energies))])
         audio = audio[s:s + win]
 
-    print(f"[INFO] 사용 오디오: {path} (sr={sr}, 길이={len(audio) / sr:.2f}s)")
-    tag = "[SYNTHETIC] " if is_synthetic else ""
-    return np.ascontiguousarray(audio, dtype=np.float32), sr, tag + os.path.basename(path)
+    print(f"[INFO] 실제 Dry 오디오 로드 완료: {path} (sr={sr}, 길이={len(audio) / sr:.2f}s)")
+    return np.ascontiguousarray(audio, dtype=np.float32), sr, os.path.basename(path)
 
 
 # ----------------------------------------------------------------------
 # 파라미터 변환 / 출력
 # ----------------------------------------------------------------------
 def array_to_dict(params):
-    comp_params = {
-        "threshold_db": float(params[0]),
-        "ratio": float(params[1]),
-        "attack_ms": float(params[2]),
-        "release_ms": float(params[3]),
-    }
+    """탐색된 2차원 배열을 팀원의 apply_effects 규격으로 변환 (컴프레서는 바이패스 고정)."""
     drive_params = {
-        "drive": float(params[4]),
-        "level": float(params[5]),
+        "drive": float(params[0]),
+        "level": float(params[1]),
     }
-    return comp_params, drive_params
+    return BYPASS_COMP_PARAMS, drive_params
 
 
 def print_comparison(method_name, target_params, best_params, best_loss):
@@ -203,7 +168,6 @@ class Tracker:
         return loss
 
     def padded_history(self):
-        """조기 종료로 길이가 budget보다 짧아도 마지막 best로 채워 길이를 맞춘다."""
         h = list(self.history)
         if len(h) < self.budget:
             h += [h[-1]] * (self.budget - len(h))
@@ -211,7 +175,7 @@ class Tracker:
 
 
 # ----------------------------------------------------------------------
-# 탐색 알고리즘 (Random Search & IPOP-CMA-ES)
+# 탐색 알고리즘 (Random Search & 50x4 Restart CMA-ES)
 # ----------------------------------------------------------------------
 def run_random_search(objective_fn, budget, seed):
     rng = np.random.default_rng(seed)
@@ -221,29 +185,49 @@ def run_random_search(objective_fn, budget, seed):
     return denormalize(tr.best_norm), tr.best_loss, tr.padded_history()
 
 
-def run_cma_es(objective_fn, budget, seed, sigma0=0.3, popsize=None,
-               max_restarts=3, incpopsize=2):
+def run_cma_es(objective_fn, budget, seed, n_runs=4, sigma0=0.25, popsize=6):
+    """
+    총 예산(예: 200회)을 n_runs(예: 4번)로 균등 분할하여 (50회 x 4번)
+    반드시 4번의 독립적인 재시작(Restart)이 수행되도록 보장합니다.
+    """
     rng = np.random.default_rng(seed)
     tr = Tracker(objective_fn, budget)
-    base_pop = popsize or (4 + int(3 * np.log(DIM)))
-    restart = 0
 
-    while not tr.exhausted and restart <= max_restarts:
-        x0 = np.full(DIM, 0.5) if restart == 0 else rng.uniform(0.1, 0.9, DIM)
-        pop = int(base_pop * (incpopsize ** restart))
+    # 예산을 n_runs 등분 (예: 200 // 4 = 50회씩 4번 할당)
+    base_evals = budget // n_runs
+    rem = budget % n_runs
+    run_budgets = [base_evals + (1 if i < rem else 0) for i in range(n_runs)]
+
+    for run_idx, sub_budget in enumerate(run_budgets):
+        if tr.exhausted or sub_budget <= 0:
+            break
+
+        # 첫 시도는 중앙(0.5), 이후 재시작(Restart)은 랜덤 시작점
+        x0 = np.full(DIM, 0.5) if run_idx == 0 else rng.uniform(0.1, 0.9, DIM)
         opts = {
             "bounds": [0.0, 1.0],
-            "popsize": pop,
-            "seed": seed + 1000 * restart + 1,
+            "popsize": popsize,
+            "maxfevals": sub_budget,
+            "seed": seed + 1000 * run_idx + 1,
             "verbose": -9,
-            "tolfun": 1e-10,
-            "tolx": 1e-8,
+            "tolfun": 1e-12,
+            "tolx": 1e-12,
         }
         es = cma.CMAEvolutionStrategy(x0, sigma0, opts)
-        while not es.stop() and not tr.exhausted:
+        evals_in_run = 0
+
+        # 해당 회차에 할당된 예산(예: 50회)을 채울 때까지만 정확히 구동 후 다음 재시작으로 넘어감
+        while not es.stop() and not tr.exhausted and evals_in_run < sub_budget:
             xs = es.ask()
-            es.tell(xs, [tr(x) for x in xs])
-        restart += 1
+            remaining = sub_budget - evals_in_run
+            if len(xs) > remaining:
+                xs = xs[:remaining]
+            losses = [tr(x) for x in xs]
+            evals_in_run += len(xs)
+            if len(xs) == popsize:
+                es.tell(xs, losses)
+            else:
+                break
 
     return denormalize(tr.best_norm), tr.best_loss, tr.padded_history()
 
@@ -256,7 +240,7 @@ def run_sensitivity(objective_fn, n_points=21):
     grid = np.linspace(0.0, 1.0, n_points)
     results = {}
     print("\n" + "=" * 70)
-    print("[1D 민감도 분석] 정답에서 한 파라미터만 변화 (나머지는 정답 고정)")
+    print("[1D 민감도 분석] 정답에서 한 파라미터만 변화 (Overdrive 2D)")
     print("-" * 70)
     print(f"{'파라미터':<20} | {'loss(min)':>10} | {'loss(max)':>10} | {'range':>10} | {'해석':<}")
     print("-" * 70)
@@ -283,8 +267,10 @@ def run_sensitivity(objective_fn, n_points=21):
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-        fig, axes = plt.subplots(2, 3, figsize=(13, 7))
-        for ax, (name, losses) in zip(axes.ravel(), results.items()):
+        fig, axes = plt.subplots(1, DIM, figsize=(10, 4))
+        if DIM == 1:
+            axes = [axes]
+        for ax, (name, losses) in zip(axes, results.items()):
             ax.plot(grid, losses, marker="o", ms=3)
             ax.axvline(normalize(TARGET_PARAMS)[PARAM_NAMES.index(name)], color="r", ls="--", lw=1)
             ax.set_title(name.strip())
@@ -329,7 +315,7 @@ def save_convergence_plot(curves, budget):
 # ----------------------------------------------------------------------
 # 메인 파이프라인
 # ----------------------------------------------------------------------
-def run_search_pipeline(budgets=(50, 200), n_seeds=3, sensitivity=True):
+def run_search_pipeline(budgets=(200,), n_restarts=4, n_seeds=3, sensitivity=True):
     dry_audio, sr, src = load_real_dry_sample()
 
     target_comp, target_drive = array_to_dict(TARGET_PARAMS)
@@ -346,14 +332,16 @@ def run_search_pipeline(budgets=(50, 200), n_seeds=3, sensitivity=True):
     if sensitivity:
         run_sensitivity(objective_function)
 
+    cma_label = f"CMA-ES ({n_restarts} restarts)"
     methods = {
         "Random Search": lambda b, s: run_random_search(objective_function, b, s),
-        "CMA-ES (IPOP)": lambda b, s: run_cma_es(objective_function, b, s),
+        cma_label: lambda b, s: run_cma_es(objective_function, b, s, n_runs=n_restarts),
     }
 
     for budget in budgets:
+        per_run = budget // n_restarts
         print("\n" + "#" * 92)
-        print(f"# 예산(max evals) = {budget}, 시드 {n_seeds}개, 오디오: {src}")
+        print(f"# 총 예산 = {budget}회 (CMA-ES: {per_run}회 x {n_restarts}번 실행), 시드 {n_seeds}개, 오디오: {src}")
         print("#" * 92)
         curves = {m: [] for m in methods}
         summary = {}
@@ -373,18 +361,20 @@ def run_search_pipeline(budgets=(50, 200), n_seeds=3, sensitivity=True):
                              TARGET_PARAMS, best_run[0], best_run[1])
 
         print("\n[요약] 시드 평균 ± 표준편차")
-        print(f"{'Method':<16} | {'Loss':>20} | {'평균 정규화 파라미터 오차(%)':>30}")
-        print("-" * 74)
+        print(f"{'Method':<22} | {'Loss':>20} | {'평균 정규화 파라미터 오차(%)':>30}")
+        print("-" * 80)
         for name, (lm, ls, em, es_) in summary.items():
-            print(f"{name:<16} | {lm:>10.4f} ± {ls:<7.4f} | {em:>16.1f} ± {es_:<8.1f}")
+            print(f"{name:<22} | {lm:>10.4f} ± {ls:<7.4f} | {em:>16.1f} ± {es_:<8.1f}")
 
         save_convergence_plot(curves, budget)
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Gradient-free effect parameter search baseline")
-    p.add_argument("--budgets", type=int, nargs="+", default=[50, 200],
-                   help="평가 횟수 예산 목록 (예: --budgets 50 200 1000)")
+    p = argparse.ArgumentParser(description="Gradient-free effect parameter search baseline (Overdrive only)")
+    p.add_argument("--budgets", type=int, nargs="+", default=[200],
+                   help="총 평가 횟수 예산 목록 (기본값: 200)")
+    p.add_argument("--restarts", type=int, default=4,
+                   help="CMA-ES 분할 실행 횟수 (기본값: 4 -> 200회일 경우 50회씩 4번 실행)")
     p.add_argument("--seeds", type=int, default=3, help="반복 시드 수")
     p.add_argument("--no-sensitivity", action="store_true", help="1D 민감도 분석 생략")
     return p.parse_args()
@@ -394,6 +384,7 @@ if __name__ == "__main__":
     args = parse_args()
     run_search_pipeline(
         budgets=tuple(args.budgets),
+        n_restarts=args.restarts,
         n_seeds=args.seeds,
         sensitivity=not args.no_sensitivity,
     )
