@@ -9,6 +9,7 @@ Usage (프로젝트 루트에서)
 python -m search.evaluate_dataset                  # OD 정답 데이터 전체
 python -m search.evaluate_dataset --limit 10       # 앞에서 10개만 (빠른 확인용)
 python -m search.evaluate_dataset --budget 200 --restarts 4 --seeds 1
+python -m search.evaluate_dataset --examples       # 저장된 결과로 오디오 예시(dry / 정답 / 찾은 소리) 생성
 """
 import os
 import csv
@@ -27,6 +28,12 @@ from search.pipeline import (
 LABEL_DIR = "data/synthetic/Fender_Strat_Clean/labels"
 EFFECT_TYPE = "overdrive"
 KNOBS = ["drive", "level"]  # PARAM_SPECS 순서와 같아야 합니다.
+
+# Step 0 통과 기준: 노브 오차가 모두 5% 이내 "또는" 소리 거리가 기준 이하이면 성공
+# (다른 노브 조합으로 같은 소리를 내는 경우도 성공으로 봄. 예: drive가 낮으면 drive와 level이 같은 역할)
+KNOB_THRESHOLD_PCT = 5.0
+AUDIO_THRESHOLD = 0.00935930329251289  # metrics/README.md의 -80dB 하한 기준 잠정 참고값
+PASS_RATE = 0.9
 
 
 # ----------------------------------------------------------------------
@@ -138,6 +145,20 @@ def print_summary(rows):
               + " | ".join(f"{np.mean(max_err <= th) * 100:>6.0f}%" for th in (2.0, 5.0, 10.0)))
     print("=" * width)
 
+    print(f"\n[Step 0 판정] 노브 오차 {KNOB_THRESHOLD_PCT:g}% 이내 또는 소리 거리 {AUDIO_THRESHOLD:.5f} 이하 → 성공, "
+          f"성공률 {PASS_RATE * 100:.0f}% 이상 → 통과")
+    print("-" * width)
+    print(f"{'Method':<22} | {'노브 성공':>9} | {'소리 성공':>9} | {'최종 성공':>9} | 판정")
+    print("-" * width)
+    for method in dict.fromkeys(r["method"] for r in rows):
+        sub = [r for r in rows if r["method"] == method]
+        knob_ok = np.array([r["err_max_pct"] <= KNOB_THRESHOLD_PCT for r in sub])
+        audio_ok = np.array([r["loss"] <= AUDIO_THRESHOLD for r in sub])
+        rate = np.mean(knob_ok | audio_ok)
+        print(f"{method:<22} | {np.mean(knob_ok) * 100:>8.0f}% | {np.mean(audio_ok) * 100:>8.0f}% | "
+              f"{rate * 100:>8.0f}% | {'통과' if rate >= PASS_RATE else '불통과'}")
+    print("=" * width)
+
 
 def save_rows(rows):
     os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -149,15 +170,64 @@ def save_rows(rows):
     print(f"[INFO] 상세 결과 저장: {path}")
 
 
+# ----------------------------------------------------------------------
+# 결과 기록용 오디오 예시
+# ----------------------------------------------------------------------
+EXAMPLE_DIR = os.path.join(OUTPUT_DIR, "examples")
+
+
+def pick_examples(rows):
+    """대표 사례 3개: CMA-ES 노브 성공 / CMA-ES 소리만 성공 / Random Search 실패"""
+    cma = [r for r in rows if r["method"].startswith("CMA")]
+    rnd = [r for r in rows if r["method"] == "Random Search"]
+    knob_ok = lambda r: r["err_max_pct"] <= KNOB_THRESHOLD_PCT
+    audio_ok = lambda r: r["loss"] <= AUDIO_THRESHOLD
+    picks = {
+        "1_cma_knob_ok": min((r for r in cma if knob_ok(r)), key=lambda r: r["err_max_pct"]),
+        "2_cma_audio_only": max((r for r in cma if audio_ok(r) and not knob_ok(r)), key=lambda r: r["err_max_pct"]),
+    }
+    failed = [r for r in rnd if not (knob_ok(r) or audio_ok(r))]
+    if failed:
+        picks["3_random_fail"] = max(failed, key=lambda r: r["loss"])
+    return picks
+
+
+def save_examples(csv_path=None):
+    """저장된 결과 CSV에서 대표 사례를 골라 dry / 정답(wet) / 찾은 소리를 wav로 저장합니다."""
+    csv_path = csv_path or os.path.join(OUTPUT_DIR, f"dataset_{EFFECT_TYPE}.csv")
+    with open(csv_path, encoding="utf-8") as f:
+        rows = [{k: (v if k in ("target_id", "method") else float(v)) for k, v in r.items()}
+                for r in csv.DictReader(f)]
+    pairs = {p[0]: p for p in load_pairs()}
+    os.makedirs(EXAMPLE_DIR, exist_ok=True)
+
+    for name, r in pick_examples(rows).items():
+        _, dry_path, wet_path, truth = pairs[r["target_id"]]
+        dry, sr = load_mono(dry_path)
+        wet, _ = load_mono(wet_path)
+        found = {k: r[f"found_{k}"] for k in KNOBS}
+        rendered = apply_effects(dry, sr, None, EFFECT_TYPE, found)
+        for tag, audio in (("dry", dry), ("truth", wet), ("found", rendered)):
+            sf.write(os.path.join(EXAMPLE_DIR, f"{name}_{tag}.wav"), audio, sr, subtype="FLOAT")
+        print(f"[{name}] {r['target_id']} ({r['method']})\n"
+              f"    정답 { {k: round(float(t), 2) for k, t in zip(KNOBS, truth)} } / 찾은 값 { {k: round(v, 2) for k, v in found.items()} } "
+              f"/ 노브 오차 {r['err_max_pct']:.1f}% / 소리 거리 {r['loss']:.4f}")
+    print(f"[INFO] 오디오 예시 저장: {EXAMPLE_DIR}")
+
+
 def parse_args():
     p = argparse.ArgumentParser(description="Step 0: 정답 데이터에서 Overdrive 노브 복원 평가")
     p.add_argument("--budget", type=int, default=200, help="파일당 평가 횟수 예산 (기본값: 200)")
     p.add_argument("--restarts", type=int, default=4, help="CMA-ES 분할 실행 횟수 (기본값: 4)")
     p.add_argument("--seeds", type=int, default=1, help="파일당 반복 시드 수 (기본값: 1)")
     p.add_argument("--limit", type=int, default=None, help="앞에서 N개 파일만 평가 (빠른 확인용)")
+    p.add_argument("--examples", action="store_true", help="평가 대신, 저장된 결과로 오디오 예시만 생성")
     return p.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    evaluate(budget=args.budget, n_restarts=args.restarts, n_seeds=args.seeds, limit=args.limit)
+    if args.examples:
+        save_examples()
+    else:
+        evaluate(budget=args.budget, n_restarts=args.restarts, n_seeds=args.seeds, limit=args.limit)
