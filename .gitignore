@@ -63,3 +63,6 @@ Thumbs.db
 # 실행 결과물 (search/pipeline.py 등)
 /outputs/
 /data/synthetic_test/
+
+# 개인 메모 (Notion 진행 현황 사본 등)
+/notes/
