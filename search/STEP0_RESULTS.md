@@ -47,7 +47,8 @@ CMA-ES의 정답 drive 구간별 노브 성공률:
 
 ## 4. 오디오 예시
 
-`python -m search.evaluate_dataset --examples`로 생성합니다 (`outputs/search/examples/`).
+공유 드라이브 `results/step0_overdrive/`에서 들을 수 있습니다.
+(`python -m search.evaluate_dataset --examples`로 생성, 로컬 저장 위치 `outputs/search/examples/`)
 사례마다 `_dry`, `_truth`(정답), `_found`(찾은 노브로 렌더링) 3개 파일이 있습니다.
 
 | 파일 | 사례 | 정답 (drive, level) | 찾은 값 | 노브 오차 | 소리 거리 |

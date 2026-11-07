@@ -7,7 +7,11 @@ import json
 import random
 import numpy as np
 import soundfile as sf
-from pedalboard import Pedalboard, Compressor, Distortion, Gain, PeakFilter
+import sys
+
+# python scripts/Create_Synthetic_pairs.py로 직접 실행해도 effects/ 폴더를 찾도록 저장소 루트를 경로에 추가합니다.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from effects import render_chain
 
 # =====================================================================
 # 사용자 설정 변수 (Configuration Variables)
@@ -77,38 +81,14 @@ def get_random_drive(drive_type):
 # 오디오 신호 처리(Digital Signal Processing) 함수
 # =====================================================================
 def apply_effects(audio_data, sample_rate, comp_params, drive_type, drive_params):
-    """페달보드(Pedalboard) 라이브러리를 활용하여 직렬 신호 사슬(Signal Chain)을 구성하고 렌더링(Rendering)합니다."""
-    board = Pedalboard()
-    
+    """컴프 → 드라이브 1종 체인을 렌더링합니다. 실제 처리는 effects/render.py가 스키마를 읽어 수행합니다."""
+    chain = []
     # 1. 압축기(Compressor) 추가 (comp_params가 None이면 생략: Step 0은 컴프 제외)
     if comp_params is not None:
-        board.append(Compressor(
-            threshold_db=comp_params["threshold_db"],
-            ratio=comp_params["ratio"],
-            attack_ms=comp_params["attack_ms"],
-            release_ms=comp_params["release_ms"]
-        ))
-    
-    # 2. 증폭 단(Gain Stage) 이펙터 추가 (복합 클래스 매핑)
-    if drive_type == "overdrive":
-        board.append(Distortion(drive_db=drive_params["drive"]))
-        board.append(Gain(gain_db=drive_params["level"]))
-        
-    elif drive_type == "distortion":
-        board.append(Distortion(drive_db=drive_params["dist"]))
-        # Tone 매핑을 위한 피크 필터(Peak Filter) 적용
-        board.append(PeakFilter(cutoff_frequency_hz=1000.0, gain_db=drive_params["tone"])) 
-        board.append(Gain(gain_db=drive_params["level"]))
-        
-    elif drive_type == "fuzz":
-        # 퍼즈(Fuzz)는 더 강한 왜곡(Distortion)을 위해 드라이브 값을 기본적으로 증폭시킵니다.
-        board.append(Distortion(drive_db=drive_params["fuzz"]))
-        board.append(PeakFilter(cutoff_frequency_hz=800.0, gain_db=drive_params["tone"]))
-        board.append(Gain(gain_db=drive_params["level"]))
-        
-    # 오디오 배열(Audio Array) 연산 수행
-    wet_audio = board(audio_data, sample_rate)
-    return wet_audio
+        chain.append({"effect_type": "compressor", "values": comp_params})
+    # 2. 증폭 단(Gain Stage) 이펙터 추가 (클래스 구성은 schemas/effects.data.json의 composite_of 기준)
+    chain.append({"effect_type": drive_type, "values": drive_params})
+    return render_chain(audio_data, sample_rate, chain)
 
 # =====================================================================
 # 메인 파이프라인(Main Pipeline)
