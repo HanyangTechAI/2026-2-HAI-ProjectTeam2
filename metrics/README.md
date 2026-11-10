@@ -4,7 +4,10 @@
 `evaluate_chain`은 정답 노브 설정을 얼마나 복원했는지를 측정합니다.
 소리가 비슷해도 노브가 같다는 뜻은 아닙니다. 두 결과를 별도로 보고해야 합니다.
 
-현재 오디오 지표 버전은 **`log_stft_joint_active_energy_v2_floor_m80db`**입니다.
+독립적인 음량 변화 지표 `dynamics_distance(x, y, sample_rate)`의 사용법·설정·검증은
+[11절 Step 1](#11-step-1-dynamics-거리-2026-11-10)에 있습니다. 두 지표의 결합은 아직 하지 않았습니다.
+
+현재 스펙트럼 지표 버전은 **`log_stft_joint_active_energy_v2_floor_m80db`**입니다.
 2026-11-05 요청에 따라 하한을 **-80 dB / STFT 크기 0.0512**로 변경했습니다.
 STFT·에너지 가중치·함수 인터페이스는 유지했습니다. 하한 아래의 작은 유효음은
 무음과 구별되지 않을 수 있습니다.
@@ -643,3 +646,362 @@ T = (0.00000834554465227687 + 0.018710261040373502) / 2
 렌더러·검색·스키마·공용 설정은 변경하지 않았습니다.
 실행 환경은 Python 3.11.0, NumPy 2.4.6, librosa 0.11.0,
 SciPy 1.17.1, pedalboard 0.9.26이며 평가 JSON에도 버전을 기록합니다.
+
+## 11. Step 1: Dynamics 거리 (2026-11-10)
+
+`dynamics_distance(x, y, sample_rate)`는 **시간에 따른 음량의 차이**를 독립적인
+Python `float`로 반환합니다. 전체 음량, 어택(커지는 부분), 서스테인(유지되는 부분),
+릴리즈(줄어드는 부분), 컴프레서가 바꾼 음량 곡선을 비교합니다.
+점수 0은 **측정한 음량 곡선이 같음**을 뜻하며 파형 자체나 청각적 유사성이 같다는 뜻은 아닙니다.
+단위는 평균 절대 **dB 차이**이고 0~1로 제한되지 않습니다.
+
+```python
+from metrics.dynamics import dynamics_distance
+
+# 같은 표본율, 길이, 시간 정렬, 공통 진폭 기준의 모노 배열
+score = dynamics_distance(reference_audio, rendered_audio, sample_rate=16000)
+```
+
+### 계산과 초기 설정의 근거
+
+1. 직사각형 **30ms 프레임**에서 RMS(짧은 구간의 평균적인 음량)를 구합니다.
+   **10ms 간격**으로 옮기며 계산합니다. 표본 수는 `round(sample_rate * ms / 1000)`이며
+   최소 1개입니다. 30ms는 개별 파형의 빠른 진동을 평균내면서 음량 곡선의 변화를
+   남기기 위한 초기 절충입니다. 10ms hop은 겹치는 창으로 변화를 관찰하는 간격입니다.
+   20/50ms보다 최적이라고 검증한 설정은 아닙니다. 아주 빠른 어택은 흐려질 수 있고,
+   저음의 주기·위상에 따라 RMS가 흔들릴 수 있습니다. 더 작은 hop도 30ms 창의 흐림을 없애지는 않습니다.
+2. 고정 RMS 참조 **1**에 대해 `20 * log10(max(RMS, 1e-5))`를 계산합니다.
+   하한은 **-100 dBFS**, 즉 RMS `1e-5`입니다. 진폭 1인 일정 신호의 RMS는 1이고,
+   충분히 긴 진폭 1 순음의 RMS는 약 `1/sqrt(2)`이므로 약 -3.01 dBFS입니다.
+   스펙트럼 지표의 **STFT 참조 512 / 크기 하한 0.0512 / -80 dB와 별개**입니다.
+3. 어느 한쪽이라도 RMS가 하한을 **초과**하는 프레임을 포함합니다(OR).
+   그 프레임들의 두 dB 값 차이의 절댓값을 **동일한 비중으로 평균**합니다.
+   한쪽에만 존재하는 소리도 포함하고, 양쪽 모두 하한 이하인 프레임은 분모에도 넣지 않습니다.
+   활성 프레임이 없으면 `0.0`을 반환합니다.
+4. 신호와 겹치는 모든 hop 격자의 창을 양 끝에서 0으로 완성하고, 항상 전체 창 길이로
+   RMS를 계산합니다. 따라서 뒤에 정확한 공통 무음을 붙여도 새로운 비영 창이 생기지 않아
+   점수가 희석되지 않습니다. 선행 무음은 hop의 배수인 경우 같은 격자를 유지합니다.
+   임의의 시간 이동이나 내부 구간 이동에 대한 불변성을 보장하지는 않습니다.
+
+```text
+R_x[t] = sqrt(mean(x_frame[t] ** 2))
+L_x[t] = 20 * log10(max(R_x[t], 1e-5))
+active[t] = max(R_x[t], R_y[t]) > 1e-5
+dynamics_distance = mean(abs(L_x[t] - L_y[t]) for active frames)
+```
+
+입력별 정규화·peak 보정·자동 시간 정렬은 하지 않습니다. 입력 순서를 바꿔도 같은 값입니다.
+활성 프레임을 균등하게 평균하는 이유는 큰 어택의 에너지가 조용한 서스테인·릴리즈의
+차이를 과도하게 누르는 일을 피하기 위해서입니다. 대신 하한 근처의 잡음과 경계 프레임에도
+같은 비중을 줍니다. 긴 일치 **유음** 구간이 늘어나면 짧은 오류는 여전히 희석될 수 있습니다.
+이를 청각적으로 최적인 집계라고 주장하지 않습니다.
+
+하한은 작은 수치 잡음과 유효음 보존의 초기 절충입니다. 같은 16000 Hz/1초/440 Hz
+순음과 seed 42, 표준편차 `1e-6` Gaussian 잡음에서 후보 하한을 비교했습니다.
+아래 값은 모두 **RMS 방식**으로 직접 계산했으며 스펙트럼 점수가 아닙니다.
+
+| RMS 하한 후보 | 무음 ↔ 잡음 | 무음 ↔ 순음 peak 1e-4 | 무음 ↔ 순음 peak 1e-5 |
+|---|---:|---:|---:|
+| -80 dBFS | 0 | 0 | 0 |
+| **-100 dBFS (선택)** | **0** | **16.862584** | **0** |
+| -120 dBFS | 0.213386 | 36.862584 | 16.862584 |
+
+선택값은 이 잡음을 제외하면서 peak `1e-4` 순음을 남깁니다.
+**peak `1e-5` 순음은 실제로 존재해도 하한 아래이므로 무음과 구별되지 않습니다.**
+이는 수치 잡음만 제거하는 완벽한 구분이 아닙니다. 실제 기타·장비 잡음·청취 결과로
+하한과 프레임 설정을 검증하지 않았으며 최종값이나 청각적 허용 기준이 아닙니다.
+잡음도 RMS가 하한을 넘으면 평가됩니다. 하한 아래 잡음도 유음에 섞이면 점수가 조금 변할 수 있습니다.
+
+### 입력 조건과 오류
+
+- 같은 길이의 비어 있지 않은 1차원 실수 모노 배열/숫자 목록을 받습니다.
+  빈 입력, stereo/고차원/스칼라, 문자·bool·복소수·object, NaN/Inf 등은 `ValueError`입니다.
+- `sample_rate`는 양쪽에 공통인 정수 Hz입니다. `16000.0` 같은 정수값 실수도 허용합니다.
+  bool, 문자열, 두 표본율의 목록/튜플, 0/음수/비정수/NaN/Inf는 `ValueError`입니다.
+  과도한 분석 창 할당을 막기 위해 지원 범위를 **1~768000 Hz**로 제한합니다.
+  이는 자원 보호 범위이며 모든 표본율에서의 음향적 타당성을 뜻하지 않습니다.
+- 서로 다른 원본 표본율은 호출자가 먼저 공통 표본율로 변환해야 합니다.
+  함수는 재표본화를 하지 않습니다. **배열에는 표본율 정보가 없으므로 길이가 같으면
+  원래 표본율의 불일치를 자동 검출할 수 없습니다.** 시간 정렬과 공통 진폭 기준도 호출자가 확인합니다.
+- full scale을 1로 둔 공통 실수 진폭을 권장합니다. 정수도 원래 숫자 크기로 받으므로,
+  PCM 정수는 양쪽 모두 같은 full-scale 기준으로 먼저 실수 변환해야 합니다.
+  1보다 큰 값도 자르거나 정규화하지 않습니다. RMS 제곱/합이 넘치는 극단값은
+  명확한 `ValueError`로 거부합니다. 계산 가능한 큰 유한값은 허용합니다.
+- 양쪽 모두 무음이면 오류 대신 `0.0`입니다. 입력 배열은 변경하지 않습니다.
+
+### 실행한 검증과 측정값
+
+작업 위치는 **`C:\hai_TeamProject-spectral-submission`**, 브랜치는
+**`feat/spectral-distance`**입니다. `C:\hai_TeamProject`의 다른 브랜치와 미커밋 작업,
+현재 브랜치의 미커밋 데이터 분할 파일은 보존했습니다. 변경은 `dynamics.py`,
+`test_dynamics.py`, 이 README에 한정하며 commit/push/PR은 하지 않았습니다.
+
+```powershell
+# 위 작업 폴더에서 기존 가상환경을 사용한 실제 실행 명령
+& C:/hai_TeamProject/.venv/Scripts/python.exe -m unittest discover -s metrics -p test_dynamics.py -v
+& C:/hai_TeamProject/.venv/Scripts/python.exe -m unittest discover -s metrics -p 'test_*.py' -v
+& C:/hai_TeamProject/.venv/Scripts/python.exe -m unittest discover -s scripts -p 'test_*.py' -v
+& C:/hai_TeamProject/.venv/Scripts/python.exe -m unittest discover -s schemas -p 'test_*.py' -v
+```
+
+| 실제 실행한 테스트 | 결과 |
+|---|---|
+| Dynamics 신규 (아래 전체 metrics 실행에도 포함) | **28/28 통과**, 실제 컴프레서/팀 렌더러 통합 3개 포함, skip 없음 |
+| metrics 전체 (기존 66 + 신규 28) | **94/94 통과** |
+| 데이터 분할 scripts | **31/31 통과** |
+| schemas | **7/8 통과**, 기존 날짜 형식 검사 1개 실패 |
+| 중복을 제외한 전체 | **133개 중 132 통과, 1 실패** |
+
+스키마 실패는 `test_inventory_constraints`의 `updated_at="yesterday"` 거부 검사입니다.
+Dynamics를 import하지 않는 독립 schemas 실행에서도 재현했습니다. 현재 가상환경에
+선택 의존성 `rfc3339_validator`가 없고 `FormatChecker.checkers`에 `date-time` 검사가
+등록되어 있지 않아 잘못된 날짜가 거부되지 않습니다. 이번에는 스키마·requirements·환경을
+변경하지 않았습니다. 전체 스키마 검사까지 통과시키려면 별도로 날짜 검사 의존성을 보완해야 합니다.
+
+신규 테스트는 동일 신호, 대칭성, 알려진 진폭 배율의 dB 차이, 어택·서스테인·릴리즈,
+합성 압축, 실제 컴프레서, 무음/작은 잡음/작은 유효음, 긴 무음과 hop에 맞지 않는 꼬리,
+한쪽 소리, 표본율 조건, 잘못된 타입과 극단값을 다룹니다.
+8000~192000 Hz에서는 진폭 절반의 알려진 dB 차이를 확인했습니다.
+
+`effects/render.py`는 이 체크아웃에 없습니다. 실제 팀 렌더러인
+`scripts/Create_Synthetic_pairs.py`의 `apply_effects`를 사용했습니다.
+import 때 만드는 데이터 폴더는 임시 디렉터리 안에 한정했습니다. WAV나 데이터는 생성하지 않았습니다.
+컴프레서 단독 비교는 Pedalboard를 직접 사용하고, 팀 렌더러 비교는 overdrive
+`drive=0`, `level=0`을 양쪽에 똑같이 유지해 ratio 1과 4를 비교했습니다.
+후자는 드라이브 단계까지 포함한 출력의 비교입니다.
+
+합성 음은 16000 Hz/2초/440 Hz, peak 0.5, 시작 0.1초, 어택 80ms,
+릴리즈 시작 1.2초, 릴리즈 500ms입니다. 컴프레서는 threshold -24 dB,
+ratio 4, attack 5ms, release 100ms입니다. 수치는 허용 기준이 아닌 재현용 측정값입니다.
+
+| 비교 | Dynamics 거리 (dB) |
+|---|---:|
+| 같은 신호 | 0 |
+| 전체 진폭 절반 | 6.020600 |
+| 어택 80 → 350ms | 1.522998 |
+| 서스테인 구간(0.5~1.2초)만 진폭 절반 | 2.580113 |
+| 릴리즈 500 → 150ms | 17.714791 |
+| 컴프레서 단독 적용 전후 | 10.784220 |
+| 팀 렌더러 ratio 1 → 4, 같은 드라이브 설정 | 10.420152 |
+| 팀 렌더러 같은 설정 재실행 | 0 |
+| 팀 렌더러 attack 5 → 100ms | 2.208499 |
+| 팀 렌더러 release 100 → 1000ms | 0.898319 |
+| 한쪽에만 위 합성 음 존재 | 87.556884 |
+| 공통 큰 음 뒤 한쪽에만 peak 1e-4 순음 1초 추가 | 8.431292 |
+
+경계 안에서 잘린 서로 다른 두 음(19573 samples)에 공통 무음 0/1/5/20초를 붙인 점수는
+모두 **1.7703035211686364**였습니다. 무음과 표준편차 `1e-6` 잡음은 **0**,
+무음과 peak `1e-4` 순음은 **16.862584**, peak `1e-5` 순음은 **0**입니다.
+
+### 다음 단계와 검증 한계
+
+Spectral과 Dynamics의 결합은 구현하지 않았습니다. Spectral은 자연로그 기반 스펙트럼 차이,
+Dynamics는 dB 기반 음량 곡선 차이이므로 범위와 단위가 다릅니다.
+기존 Spectral 참고 기준을 Dynamics에 적용하거나, 원점수의 50:50 합을 최종값으로 정하면 안 됩니다.
+추후 실제 기타와 청취 라벨이 있는 산정 데이터에서 점수 분포·서로 겹치는 음량 정보·가중치를
+검토하고, 별도 검증 데이터로 확인해야 합니다.
+
+이번 테스트는 구현의 수치 동작을 확인한 것입니다. 실제 기타의 청각적 유사성, 장비별 잡음,
+아주 짧은 어택, 긴 파일의 성능, 최적 창/하한/가중치, 최종 통과 기준은 검증하지 않았습니다.
+현재 구현·신규 테스트 완료를 위해 사용자가 추가로 할 작업은 없습니다.
+
+
+## 12. Step 1: Spectral + Dynamics 가중 결합 (2026-11-10)
+
+**현재 상태: 결합 함수와 자동 테스트 구현 완료. 최종 가중치·스케일은 미확정입니다.**
+앞선 11절의 “결합은 구현하지 않았습니다”와 스키마 실패 기록은 이전 작업 시점의 기록입니다.
+이번에는 기존 내용을 보존하고 이 절만 추가했습니다. 현재 환경에서는 스키마 검사도 모두 통과했습니다.
+`search/pipeline.py`에는 적용하지 않았습니다.
+
+### 인터페이스와 계산식
+
+새 파일 `metrics/combined.py`는 다음 두 함수를 제공합니다. 인자는 두 함수가 같습니다.
+
+```python
+combined_distance(
+    x, y, sample_rate, *,
+    spectral_weight, dynamics_weight, spectral_scale, dynamics_scale,
+) -> float
+
+combined_distance_details(
+    x, y, sample_rate, *,
+    spectral_weight, dynamics_weight, spectral_scale, dynamics_scale,
+) -> CombinedDistanceResult
+```
+
+첫 번째는 탐색 엔진에서 사용할 **결합 점수 하나(Python float)**를 반환합니다.
+두 번째는 같은 계산을 하면서 아래 내역을 함께 반환합니다. 점수가 작을수록 측정한 차이가 작습니다.
+
+| 결과 필드 | 의미 |
+|---|---|
+| `combined` | 결합 거리 |
+| `spectral` | 기존 `spectral_distance(x, y)`의 원점수: 자연로그 크기 차이 |
+| `dynamics` | 기존 `dynamics_distance(x, y, sample_rate)`의 원점수: 평균 절대 dB 차이 |
+| `scaled_spectral`, `scaled_dynamics` | 각각의 원점수를 지정한 스케일로 나눈 값 |
+| `spectral_weight`, `dynamics_weight` | 합이 1이 되도록 정규화한 실제 가중치 |
+| `spectral_scale`, `dynamics_scale` | 호출자가 지정한 실제 나눗셈 기준값 |
+
+```text
+a = spectral_weight / (spectral_weight + dynamics_weight)
+b = dynamics_weight / (spectral_weight + dynamics_weight)
+scaled_spectral = spectral_distance(x, y) / spectral_scale
+scaled_dynamics = dynamics_distance(x, y, sample_rate) / dynamics_scale
+combined = a * scaled_spectral + b * scaled_dynamics
+```
+
+가중치는 비중으로 받습니다. 예를 들어 `3, 2`는 `0.6, 0.4`로 처리합니다.
+구현은 매우 큰 가중치의 합이 넘치지 않도록 두 값을 먼저 같은 최댓값으로 나눈 뒤 합으로 나눕니다.
+합이 1인 값도 그대로 사용할 수 있습니다(부동소수점 반올림 범위).
+
+Spectral은 자연로그 단위이고 Dynamics는 dB 단위이므로 **원점수를 바로 더하지 않습니다.**
+각 스케일은 해당 지표와 같은 단위의 양수 기준값입니다. 나눈 결과는 단위 없는 상대 점수가 됩니다.
+이는 0~1 정규화나 청각적 유사성 확률이 아니며, 1을 넘을 수 있습니다.
+단위를 맞췄다고 두 점수의 청각적 중요성까지 같아지는 것은 아닙니다.
+
+**두 가중치와 두 스케일은 모두 필수 인자입니다. 기본값·자동 추정·최적값은 없습니다.**
+스케일은 명시적인 실험 설정값 또는 산정용 데이터 전체의 점수 분포에 근거한 고정값을 사용해야 합니다.
+이번에는 실제 데이터 기반 스케일을 산정하지 않았고, 자동 산정 함수도 만들지 않았습니다.
+
+### 사용 예제와 이후 탐색 엔진에서 호출하는 방법
+
+아래 숫자는 **계산을 보여 주기 위한 임시 예시**입니다.
+`50:50`, Spectral 스케일 `1`, Dynamics 스케일 `10 dB`는 데이터로 검증한 값이나 권장값이 아닙니다.
+
+```python
+from metrics.combined import combined_distance, combined_distance_details
+
+# 아래 네 값은 예제 전용. 실제 적용 시 팀이 결정한 고정 설정으로 교체합니다.
+example_settings = dict(
+    spectral_weight=1.0,
+    dynamics_weight=1.0,
+    spectral_scale=1.0,
+    dynamics_scale=10.0,
+)
+
+# x, y: 같은 표본율·길이·시간 정렬·공통 진폭 기준의 모노 배열
+result = combined_distance_details(x, y, sample_rate, **example_settings)
+print(result.spectral, result.dynamics, result.combined)
+score = combined_distance(x, y, sample_rate, **example_settings)
+assert score == result.combined
+```
+
+나중에 탐색 엔진에서 호출할 때는 팀이 선택한 네 설정을 `metric_settings`에 담아 고정합니다.
+매 후보마다 스케일을 다시 계산하지 않습니다. 현재 탐색 코드는 수정하지 않았습니다.
+
+```python
+# metric_settings: 팀이 별도로 결정한 가중치 2개와 스케일 2개
+loss = combined_distance(wet, target_audio, sample_rate, **metric_settings)
+```
+
+Spectral만 사용하려면 가중치 `1, 0`, Dynamics만 사용하려면 `0, 1`로 지정합니다.
+결합 결과는 선택한 지표의 **원점수 / 해당 스케일**입니다.
+그 스케일을 `1`로 지정하면 기존 함수의 원점수와 같습니다.
+가중치가 0인 지표도 원점수를 반환하고 기존 입력 검증을 보존하기 위해 실제로 계산합니다.
+따라서 어느 경우든 유효한 `sample_rate`와 두 스케일이 필요하며, 두 지표의 계산 비용이 듭니다.
+
+### 입력 안전성과 유지한 기존 동작
+
+- 두 기존 거리 함수를 직접 호출합니다. 기존 계산식과 호출 방식은 바꾸지 않았습니다.
+  입력별 음량 정규화·재표본화·시간 정렬·클리핑을 하지 않으며 입력 배열도 변경하지 않습니다.
+- 두 파형은 길이가 같은 비어 있지 않은 1차원 유한 실수 배열이어야 합니다.
+  문자, bool, 복소수, NaN/Inf, 다차원, 길이 불일치 등은 기존 함수의 검증으로 거부합니다.
+  PCM 정수는 호출자가 같은 full-scale 기준의 실수로 변환해야 합니다.
+- `sample_rate` 규칙은 기존 Dynamics와 같습니다. 정수값 실수도 허용하는 공통 정수 Hz,
+  범위는 1~768000입니다. bool·문자열·비정수·NaN/Inf·서로 다른 두 rate의 목록 등은 거부합니다.
+  배열에 rate 정보가 없으므로 원본 표본율의 일치 여부와 시간 정렬은 호출자가 확인해야 합니다.
+- 가중치는 유한한 0 이상 실수이고 적어도 하나는 양수여야 합니다.
+  두 스케일은 모두 유한한 양수입니다. bool·문자열·복소수·배열은 설정값으로 받지 않습니다.
+  잘못된 설정과 입력은 `ValueError`, 필수 인자 누락은 Python의 `TypeError`입니다.
+- 계산 가능한 동일 신호는 0이고 입력 순서에 대칭입니다. 반환되는 점수는 음수가 아닌 유한한
+  Python float입니다. 극단적인 입력의 기존 계산 오버플로와 너무 작은 스케일로 인한
+  무한대 결과는 `ValueError`로 거부합니다. 가중치 0이나 동일 입력도 검증을 건너뛰지 않습니다.
+- Spectral의 **-80 dB / STFT 크기 하한 0.0512**와 Dynamics의
+  **-100 dBFS / RMS 하한 1e-5**는 그대로 별개입니다. 둘을 같은 임계값으로 취급하지 않습니다.
+  서로 다른 파형도 하한이나 각 지표의 측정 특성 때문에 점수가 0일 수 있습니다.
+- 공통 무음을 뒤에 추가해도 기존 지표의 점수가 희석되지 않는 동작을 유지합니다.
+  임의의 선행 무음·시간 이동에 대한 불변성은 보장하지 않습니다.
+
+### 자동 테스트 결과와 재현
+
+지정 작업 위치 `C:\hai_TeamProject-spectral-submission`, 브랜치 `feat/spectral-distance`에서
+기존 환경 `C:\hai_TeamProject\.venv\Scripts\python.exe`로 실행했습니다.
+
+```powershell
+& C:/hai_TeamProject/.venv/Scripts/python.exe -m unittest discover -s metrics -p test_combined.py -v
+& C:/hai_TeamProject/.venv/Scripts/python.exe -m unittest discover -s metrics -p 'test_*.py'
+& C:/hai_TeamProject/.venv/Scripts/python.exe -m unittest discover -s scripts -p 'test_*.py'
+& C:/hai_TeamProject/.venv/Scripts/python.exe -m unittest discover -s schemas -p 'test_*.py'
+```
+
+| 검사 | 결과 |
+|---|---|
+| 신규 Combined | 31/31 통과, 실제 컴프레서·팀 렌더러 통합 3개 포함 |
+| metrics 전체 | 기존 94 + 신규 31 = 125/125 통과 |
+| scripts 데이터 분할 | 31/31 통과 |
+| schemas | 8/8 통과 |
+| 중복을 제외한 전체 | **164/164 통과, 실패·skip 없음** |
+
+신규 검증에는 동일 신호, 대칭성, 한 지표만 선택, 임의의 가중치·스케일 계산식,
+가중치 변화 방향, 전체 음량·어택·서스테인·압축 변화, 무음·작은 잡음·두 하한의 차이,
+긴 공통 무음, 잘못된 입력·가중치·스케일·rate, 오버플로, 기존 함수와의 일치가 포함됩니다.
+기존 테스트를 삭제하거나 수정하지 않았습니다.
+이전 11절의 스키마 실패는 이번 실행에서는 재현되지 않았습니다.
+현재 환경에는 `rfc3339-validator 0.1.4`가 이미 설치되어 있습니다.
+이번 작업에서 패키지 설치나 `requirements.txt` 변경은 하지 않았습니다.
+
+측정 환경: Python 3.11.0, NumPy 2.4.6, librosa 0.11.0, SciPy 1.17.1,
+pedalboard 0.9.26, jsonschema 4.26.0.
+
+### 컴프레서 전후 점수: 합성 신호 예시
+
+아래 결합 점수는 위 예제와 동일한 **임시 50:50, 스케일 1과 10**으로 계산했습니다.
+신규 자동 테스트의 주 설정(임시 가중치 3:2, 스케일 0.2와 8)과는 다릅니다.
+어느 쪽도 최적값이나 최종 탐색 설정이 아닙니다.
+신호는 `metrics.test_combined.synthetic_note()`가 만드는 16000 Hz/2초/440 Hz 합성 음입니다.
+peak 0.5, 시작 0.1초, 어택 80ms, 릴리즈 시작 1.2초, 릴리즈 길이 500ms입니다.
+컴프레서는 threshold -24 dB, ratio 4, attack 5ms, release 100ms입니다.
+
+| 비교 | Spectral 원점수 (자연로그) | Dynamics 원점수 (dB) | 임시 결합 점수 |
+|---|---:|---:|---:|
+| 동일 신호 | 0 | 0 | 0 |
+| 전체 진폭 절반 | 0.013551 | 6.020600 | 0.307805 |
+| 어택 80 → 350ms | 0.003760 | 1.522998 | 0.078030 |
+| 서스테인 구간만 진폭 절반 | 0.070723 | 2.580113 | 0.164367 |
+| 실제 컴프레서 단독 적용 전후 | 0.029349 | 10.784220 | 0.553886 |
+| 팀 렌더러 ratio 1 → 4 | 0.032329 | 10.420152 | 0.537172 |
+| 팀 렌더러 같은 설정 재실행 | 0 | 0 | 0 |
+
+팀 렌더러는 기존 `scripts/Create_Synthetic_pairs.py`의 `apply_effects`입니다.
+overdrive `drive=0`, `level=0`을 양쪽에 동일하게 두었습니다. 이 경우에도 드라이브 단계가
+있으므로 컴프레서 단독 비교와 구분해야 합니다. import 시 만드는 폴더는 임시 작업 폴더에
+한정했으며 WAV 저장이나 데이터 생성은 하지 않았습니다.
+
+점수표의 핵심 재현 코드는 다음과 같습니다. 나머지 신호 변형과 팀 렌더러 비교 방법은
+`test_combined.py`의 통합 테스트에 있습니다.
+
+```python
+from pedalboard import Compressor, Pedalboard
+from metrics.test_combined import synthetic_note
+
+x = synthetic_note()
+wet = Pedalboard([Compressor(threshold_db=-24, ratio=4, attack_ms=5, release_ms=100)])(x, 16000)
+result = combined_distance_details(x, wet, 16000, **example_settings)
+print(result.spectral, result.dynamics, result.combined)
+```
+
+### 다음 단계에서 팀이 정할 값과 검증 한계
+
+1. 기존 Dry 원본 단위 분할을 유지한 산정용 Train 데이터에서 **어떤 비교 쌍을 사용할지**,
+   두 거리 분포의 어떤 통계(예: 양수 점수의 중앙값 또는 정한 분위수)를 스케일 기준으로 삼을지
+   결정해야 합니다. 스케일이 0이면 임의의 작은 수로 대체하지 말고 데이터와 산정 규칙을 재검토합니다.
+2. 그 근거로 `spectral_scale`, `dynamics_scale`을 정하고 모든 비교에 같은 값을 사용해야 합니다.
+   비교 쌍마다 따로 맞추거나 Val/Test 결과를 산정 통계에 섞지 않습니다.
+   데이터 분할 기능은 이번 작업에서 변경하지 않았습니다.
+3. 청취 평가와 별도 Val 데이터에서 가중치를 비교하고, 최종 가중치 두 개를 결정해야 합니다.
+   음량 정보가 두 지표에 겹쳐 포함된다는 점도 검토합니다. 최종 Test는 설정을 고정한 뒤 평가합니다.
+
+이번 담당 업무인 **안전한 결합 함수와 자동 테스트는 완료**했습니다.
+실제 기타 청취 평가, 데이터 기반 스케일·최적 가중치, 최종 허용 기준, 긴 실파일의 성능,
+탐색 엔진 적용은 이번 범위에서 검증하지 않았습니다.
+이번 변경은 `combined.py`, `test_combined.py` 추가와 이 README의 절 추가뿐입니다.
+기존 미커밋 Dynamics·데이터 분할 작업을 보존했으며 commit/push/PR은 하지 않았습니다.
