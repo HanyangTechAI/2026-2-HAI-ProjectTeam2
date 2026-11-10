@@ -54,3 +54,15 @@ Thumbs.db
 
 # Only a few small 1-2 second dry test samples may be committed
 !/data/dry/sample_*.wav
+
+# 공유 드라이브에서 연결한 데이터 폴더 (DRIVE_SETUP.md 참고)
+/data/raw
+/data/dry/*/audio/
+/data/synthetic/*/
+
+# 실행 결과물 (search/pipeline.py 등)
+/outputs/
+/data/synthetic_test/
+
+# 개인 메모 (Notion 진행 현황 사본 등)
+/notes/
