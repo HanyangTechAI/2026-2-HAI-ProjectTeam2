@@ -55,8 +55,10 @@ python -m scripts.split_dataset --input schemas/target_sample.data.json --output
 
 각 라벨의 효과 종류·파라미터·추가 메타데이터는 그대로 보존합니다.
 오디오 경로를 결과 폴더 기준으로 고치지 않으므로, 원래 경로 해석 기준을 유지해야 합니다.
-현재 생성기는 wet 경로 대신 `synthetic_id`를 기록합니다. wet 파일 연결 규칙은
-기존 생성기의 규칙을 따르거나 팀에서 별도로 정해야 합니다.
+현재 main의 `scripts/Create_Synthetic_pairs.py`는 변형 ID를 `target_id`,
+dry 원본 ID를 `dry_sample_id`, wet 오디오 경로를 `file_path`에 기록합니다.
+분리 결과에서도 이 필드를 그대로 보존합니다. 과거 `synthetic_id` 형식의 라벨에
+wet 경로가 없다면 해당 생성기의 파일 연결 규칙을 따르거나 팀에서 별도로 정해야 합니다.
 
 출력 폴더가 이미 있으면 빈 폴더여도 실패합니다. 덮어쓰기 옵션은 제공하지 않습니다.
 입력이 라벨 폴더일 때는 그 안에 결과를 저장할 수도 없습니다.
@@ -66,13 +68,13 @@ python -m scripts.split_dataset --input schemas/target_sample.data.json --output
 
 ## 지원하는 라벨과 ID 검사
 
-공통 스키마 형식:
+현재 main의 `Create_Synthetic_pairs.py`가 사용하는 공통 스키마 형식(ID 필드 예시):
 
 ```json
 {"target_id": "wet_001", "dry_sample_id": "dry_001", "ground_truth_chain": {}}
 ```
 
-현재 `Create_Synthetic_pairs.py`가 만드는 형식:
+과거 생성기의 `synthetic_id` / `dry_sample.sample_id` 형식도 호환 지원합니다:
 
 ```json
 {"synthetic_id": "wet_002", "dry_sample": {"sample_id": "dry_001"}, "applied_effects": {}}
