@@ -12,7 +12,7 @@ from effects import render_chain
 # =====================================================================
 # configuration 변수
 # =====================================================================
-VARIATIONS_PER_DRIVE = 3
+VARIATIONS_PER_DRIVE = 1
 ENABLE_NORMALIZATION = False
 TARGET_LUFS = -24.0
 
@@ -28,6 +28,8 @@ AMP_ID = "fixed_amp_v1"
 DRY_AUDIO_DIR = "data/dry/Fender_Strat_Clean/audio"
 SYNTH_AUDIO_DIR = "data/synthetic/Fender_Strat_Clean/audio"
 SYNTH_LABEL_DIR = "data/synthetic/Fender_Strat_Clean/labels"
+
+DEFAULT_INPUT_GAIN_DB = 0.0
 
 # =====================================================================
 # directory variables
@@ -61,6 +63,39 @@ def get_random_drive(drive_type):
             "lpf_freq": round(random.uniform(2000.0, 3000.0), 2),
             "level": round(random.uniform(-2.0, 2.0), 2)
         }
+    elif drive_type in [
+        "808-Scream", "9-Scream", "B-Drive", "O-Drive", "S-Drive", 
+        "One-Distortion", "BAT-Distortion", "XXL-Distortion", 
+        "M-Distortion", "F-Fuzz", "M-Fuzz", "T-Boost"
+    ]:
+        params = {"input_gain_db": DEFAULT_INPUT_GAIN_DB}
+        
+        if drive_type == "808-Scream":
+            params.update({"level": round(random.uniform(45.0, 55.0), 2), "overdrive": round(random.uniform(30.0, 100.0), 2), "tone": round(random.uniform(30.0, 100.0), 2)})
+        elif drive_type == "9-Scream":
+            params.update({"level": round(random.uniform(45.0, 55.0), 2), "drive": round(random.uniform(30.0, 100.0), 2), "tone": round(random.uniform(30.0, 100.0), 2)})
+        elif drive_type == "B-Drive":
+            params.update({"level": round(random.uniform(45.0, 55.0), 2), "gain": round(random.uniform(30.0, 100.0), 2), "tone": round(random.uniform(30.0, 100.0), 2)})
+        elif drive_type == "O-Drive":
+            params.update({"level": round(random.uniform(45.0, 55.0), 2), "overdrive": round(random.uniform(30.0, 100.0), 2)})
+        elif drive_type == "S-Drive":
+            params.update({"level": round(random.uniform(45.0, 55.0), 2), "overdrive": round(random.uniform(30.0, 100.0), 2), "tone": round(random.uniform(30.0, 100.0), 2)})
+        elif drive_type == "One-Distortion":
+            params.update({"level": round(random.uniform(45.0, 55.0), 2), "distortion": round(random.uniform(30.0, 100.0), 2), "tone": round(random.uniform(30.0, 100.0), 2)})
+        elif drive_type == "BAT-Distortion":
+            params.update({"volume": round(random.uniform(45.0, 55.0), 2), "distortion": round(random.uniform(30.0, 100.0), 2), "filter": round(random.uniform(30.0, 100.0), 2)})
+        elif drive_type == "XXL-Distortion":
+            params.update({"output": round(random.uniform(45.0, 55.0), 2), "distortion": round(random.uniform(30.0, 100.0), 2)})
+        elif drive_type == "M-Distortion":
+            params.update({"level": round(random.uniform(45.0, 55.0), 2), "distortion": round(random.uniform(30.0, 100.0), 2), "high": round(random.uniform(30.0, 100.0), 2), "low": round(random.uniform(30.0, 100.0), 2), "mid": round(random.uniform(30.0, 100.0), 2), "mid_frequency": round(random.uniform(30.0, 100.0), 2)})
+        elif drive_type == "F-Fuzz":
+            params.update({"volume": round(random.uniform(45.0, 55.0), 2), "fuzz": round(random.uniform(30.0, 100.0), 2)})
+        elif drive_type == "M-Fuzz":
+            params.update({"volume": round(random.uniform(45.0, 55.0), 2), "sustain": round(random.uniform(30.0, 100.0), 2), "tone": round(random.uniform(30.0, 100.0), 2)})
+        elif drive_type == "T-Boost":
+            pass
+            
+        return params
 
 # =====================================================================
 # audio 처리
@@ -77,9 +112,17 @@ def apply_effects(audio_data, sample_rate, comp_params, drive_type, drive_params
 # =====================================================================
 def generate_dataset():
     dry_files = sorted(f for f in os.listdir(DRY_AUDIO_DIR) if f.endswith(".wav"))
-    drive_types = ["overdrive", "distortion", "fuzz"]
+    ##################################################################################
+    ###################################### 적용하고 싶은 이펙터만 작성하기.
+    drive_types = [
+       # "overdrive", "distortion", "fuzz",  페달보드 기본 함수로 만든 애들 
+        "808-Scream", "9-Scream", "B-Drive", "O-Drive", "S-Drive", 
+        "One-Distortion", "BAT-Distortion", "XXL-Distortion", 
+        "M-Distortion", "F-Fuzz", "M-Fuzz", "T-Boost"
+    ]
+    ######################################################################################
     total_generated = 0
-    
+    dryfile_order = 1 # 현재 작업중인 dryfile의 순서(작업 진행도 측정용)
     for filename in dry_files:
         dry_path = os.path.join(DRY_AUDIO_DIR, filename)
         base_name = os.path.splitext(filename)[0]
@@ -151,7 +194,8 @@ def generate_dataset():
                 total_generated += 1
                 variation_counter += 1
                 
-        print(f"Work Complete: {filename} -> {variation_counter - 1}�? ?��?��")
+        print(f"Work Complete: {filename} -> {variation_counter - 1}개 렌더링, 작업: {dryfile_order}/{len(dry_files)}")
+        dryfile_order += 1
         
     print(f"\ndataset Created. from {len(dry_files)} dry files ->  to {total_generated} wet files.")
 
