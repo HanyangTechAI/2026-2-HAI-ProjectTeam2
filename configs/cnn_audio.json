@@ -1,0 +1,10 @@
+{
+  "sample_rate": 22050,
+  "duration_sec": 4.0,
+  "n_fft": 1024,
+  "hop_length": 256,
+  "n_mels": 64,
+  "fmin": 20.0,
+  "fmax": null,
+  "power_floor": 1e-10
+}

@@ -15,9 +15,6 @@ import json
 from functools import lru_cache
 from pathlib import Path
 
-import pedalboard
-from pedalboard import Pedalboard
-
 EFFECTS_PATH = Path(__file__).resolve().parent.parent / "schemas" / "effects.data.json"
 
 
@@ -43,6 +40,8 @@ def build_effect(effect_type, values, effects=None):
     - maps_to가 composite_of에 없는 클래스를 가리키면 아직 렌더링에 구현되지 않은 노브로 보고 건너뜁니다.
       (예: fuzz의 mode → custom_clipping_curve)
     """
+    import pedalboard
+
     effects = effects or load_effects()
     if effect_type not in effects:
         raise ValueError(f"알 수 없는 effect_type: {effect_type}")
@@ -80,6 +79,8 @@ def render_chain(audio, sample_rate, chain, effects=None):
            또는 {"amp_id": ..., "chain": [...]} 형태도 받습니다.
     앰프(amp_id)는 Step 1 "앰프 정하기" 결정 전까지 렌더링하지 않습니다.
     """
+    from pedalboard import Pedalboard
+
     items = chain["chain"] if isinstance(chain, dict) else chain
     board = Pedalboard()
     for item in items:
