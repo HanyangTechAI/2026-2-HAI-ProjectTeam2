@@ -48,6 +48,28 @@ def build_effect(effect_type, values, effects=None):
         raise ValueError(f"알 수 없는 effect_type: {effect_type}")
     definition = effects[effect_type]
 
+    # 새로 추가된 VST 플러그인 지원 분기
+    if definition["source"] == "vst":
+        from pedalboard import load_plugin
+        vst_name = definition["class_name"]
+        vst_path = f"./effects/VST_files/{vst_name}.vst3"
+        plugin = load_plugin(vst_path)
+
+        if hasattr(plugin, 'bypass'):
+            plugin.bypass = False
+        
+        if definition.get("fixed_params"):
+            for key, value in definition["fixed_params"].items():
+                prop_name = key.split(".")[-1]
+                setattr(plugin, prop_name, value)
+                
+        for param in definition["params"]:
+            if param["name"] in values:
+                prop_name = param["maps_to"].split(".")[-1]
+                setattr(plugin, prop_name, values[param["name"]])
+                
+        return [plugin]
+
     if definition["source"] != "pedalboard":
         # 외부 플러그인(VST) 지원은 Step 1 드라이브 차별화 결정 후 추가합니다.
         raise NotImplementedError(f"{effect_type}: source '{definition['source']}'는 아직 지원하지 않습니다.")
