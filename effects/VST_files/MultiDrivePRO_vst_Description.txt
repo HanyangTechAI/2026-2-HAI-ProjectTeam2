@@ -1,0 +1,137 @@
+========== [ MODEL: 808-Scream ] ==========
+- Parameter: pedal_model
+  Detail: <pedalboard.AudioProcessorParameter name="Pedal Model" discrete raw_value=0 value="808-Scream" (13 valid string values)>
+- Parameter: level
+  Detail: <pedalboard.AudioProcessorParameter name="Level" label="%" discrete raw_value=0.5 value=50.0 range=(0.0, 100.0, 0.1)>
+- Parameter: overdrive
+  Detail: <pedalboard.AudioProcessorParameter name="Overdrive" label="%" discrete raw_value=0.5 value=50.0 range=(0.0, 100.0, 0.1)>
+- Parameter: tone
+  Detail: <pedalboard.AudioProcessorParameter name="Tone" label="%" discrete raw_value=0.5 value=50.0 range=(0.0, 100.0, 0.1)>
+- Parameter: input_gain_db
+  Detail: <pedalboard.AudioProcessorParameter name="Input Gain" label="dB" discrete raw_value=0.5 value=0.0 range=(-12.0, 12.0, 0.5)>
+
+========== [ MODEL: 9-Scream ] ==========
+- Parameter: pedal_model
+  Detail: <pedalboard.AudioProcessorParameter name="Pedal Model" discrete raw_value=0.05 value="9-Scream" (13 valid string values)>
+- Parameter: level
+  Detail: <pedalboard.AudioProcessorParameter name="Level" label="%" discrete raw_value=0.5 value=50.0 range=(0.0, 100.0, 0.1)>
+- Parameter: drive
+  Detail: <pedalboard.AudioProcessorParameter name="Drive" label="%" discrete raw_value=0.5 value=50.0 range=(0.0, 100.0, 0.1)>
+- Parameter: tone
+  Detail: <pedalboard.AudioProcessorParameter name="Tone" label="%" discrete raw_value=0.5 value=50.0 range=(0.0, 100.0, 0.1)>
+- Parameter: input_gain_db
+  Detail: <pedalboard.AudioProcessorParameter name="Input Gain" label="dB" discrete raw_value=0.5 value=0.0 range=(-12.0, 12.0, 0.5)>
+
+========== [ MODEL: B-Drive ] ==========
+- Parameter: pedal_model
+  Detail: <pedalboard.AudioProcessorParameter name="Pedal Model" discrete raw_value=0.1 value="B-Drive" (13 valid string values)>
+- Parameter: level
+  Detail: <pedalboard.AudioProcessorParameter name="Level" label="%" discrete raw_value=0.5 value=50.0 range=(0.0, 100.0, 0.1)>
+- Parameter: gain
+  Detail: <pedalboard.AudioProcessorParameter name="Gain" label="%" discrete raw_value=0.5 value=50.0 range=(0.0, 100.0, 0.1)>
+- Parameter: tone
+  Detail: <pedalboard.AudioProcessorParameter name="Tone" label="%" discrete raw_value=0.5 value=50.0 range=(0.0, 100.0, 0.1)>
+- Parameter: input_gain_db
+  Detail: <pedalboard.AudioProcessorParameter name="Input Gain" label="dB" discrete raw_value=0.5 value=0.0 range=(-12.0, 12.0, 0.5)>
+
+========== [ MODEL: O-Drive ] ==========
+- Parameter: pedal_model
+  Detail: <pedalboard.AudioProcessorParameter name="Pedal Model" discrete raw_value=0.15 value="O-Drive" (13 valid string values)>
+- Parameter: level
+  Detail: <pedalboard.AudioProcessorParameter name="Level" label="%" discrete raw_value=0.5 value=50.0 range=(0.0, 100.0, 0.1)>
+- Parameter: overdrive
+  Detail: <pedalboard.AudioProcessorParameter name="Overdrive" label="%" discrete raw_value=0.5 value=50.0 range=(0.0, 100.0, 0.1)>
+- Parameter: input_gain_db
+  Detail: <pedalboard.AudioProcessorParameter name="Input Gain" label="dB" discrete raw_value=0.5 value=0.0 range=(-12.0, 12.0, 0.5)>
+
+========== [ MODEL: S-Drive ] ==========
+- Parameter: pedal_model
+  Detail: <pedalboard.AudioProcessorParameter name="Pedal Model" discrete raw_value=0.2 value="S-Drive" (13 valid string values)>
+- Parameter: level
+  Detail: <pedalboard.AudioProcessorParameter name="Level" label="%" discrete raw_value=0.5 value=50.0 range=(0.0, 100.0, 0.1)>
+- Parameter: overdrive
+  Detail: <pedalboard.AudioProcessorParameter name="Overdrive" label="%" discrete raw_value=0.5 value=50.0 range=(0.0, 100.0, 0.1)>
+- Parameter: tone
+  Detail: <pedalboard.AudioProcessorParameter name="Tone" label="%" discrete raw_value=0.5 value=50.0 range=(0.0, 100.0, 0.1)>
+- Parameter: input_gain_db
+  Detail: <pedalboard.AudioProcessorParameter name="Input Gain" label="dB" discrete raw_value=0.5 value=0.0 range=(-12.0, 12.0, 0.5)>
+
+========== [ MODEL: One-Distortion ] ==========
+- Parameter: pedal_model
+  Detail: <pedalboard.AudioProcessorParameter name="Pedal Model" discrete raw_value=0.25 value="One-Distortion" (13 valid string values)>
+- Parameter: level
+  Detail: <pedalboard.AudioProcessorParameter name="Level" label="%" discrete raw_value=0.5 value=50.0 range=(0.0, 100.0, 0.1)>
+- Parameter: distortion
+  Detail: <pedalboard.AudioProcessorParameter name="Distortion" label="%" discrete raw_value=0.5 value=50.0 range=(0.0, 100.0, 0.1)>
+- Parameter: tone
+  Detail: <pedalboard.AudioProcessorParameter name="Tone" label="%" discrete raw_value=0.5 value=50.0 range=(0.0, 100.0, 0.1)>
+- Parameter: input_gain_db
+  Detail: <pedalboard.AudioProcessorParameter name="Input Gain" label="dB" discrete raw_value=0.5 value=0.0 range=(-12.0, 12.0, 0.5)>
+
+========== [ MODEL: BAT-Distortion ] ==========
+- Parameter: pedal_model
+  Detail: <pedalboard.AudioProcessorParameter name="Pedal Model" discrete raw_value=0.3 value="BAT-Distortion" (13 valid string values)>
+- Parameter: volume
+  Detail: <pedalboard.AudioProcessorParameter name="Volume" label="%" discrete raw_value=0.5 value=50.0 range=(0.0, 100.0, 0.1)>
+- Parameter: distortion
+  Detail: <pedalboard.AudioProcessorParameter name="Distortion" label="%" discrete raw_value=0.5 value=50.0 range=(0.0, 100.0, 0.1)>
+- Parameter: filter
+  Detail: <pedalboard.AudioProcessorParameter name="Filter" label="%" discrete raw_value=0.5 value=50.0 range=(0.0, 100.0, 0.1)>
+- Parameter: input_gain_db
+  Detail: <pedalboard.AudioProcessorParameter name="Input Gain" label="dB" discrete raw_value=0.5 value=0.0 range=(-12.0, 12.0, 0.5)>
+
+========== [ MODEL: XXL-Distortion ] ==========
+- Parameter: pedal_model
+  Detail: <pedalboard.AudioProcessorParameter name="Pedal Model" discrete raw_value=0.35 value="XXL-Distortion" (13 valid string values)>
+- Parameter: output
+  Detail: <pedalboard.AudioProcessorParameter name="Output" label="%" discrete raw_value=0.5 value=50.0 range=(0.0, 100.0, 0.1)>
+- Parameter: distortion
+  Detail: <pedalboard.AudioProcessorParameter name="Distortion" label="%" discrete raw_value=0.5 value=50.0 range=(0.0, 100.0, 0.1)>
+- Parameter: input_gain_db
+  Detail: <pedalboard.AudioProcessorParameter name="Input Gain" label="dB" discrete raw_value=0.5 value=0.0 range=(-12.0, 12.0, 0.5)>
+
+========== [ MODEL: M-Distortion ] ==========
+- Parameter: pedal_model
+  Detail: <pedalboard.AudioProcessorParameter name="Pedal Model" discrete raw_value=0.4 value="M-Distortion" (13 valid string values)>
+- Parameter: level
+  Detail: <pedalboard.AudioProcessorParameter name="Level" label="%" discrete raw_value=0.5 value=50.0 range=(0.0, 100.0, 0.1)>
+- Parameter: distortion
+  Detail: <pedalboard.AudioProcessorParameter name="Distortion" label="%" discrete raw_value=0.5 value=50.0 range=(0.0, 100.0, 0.1)>
+- Parameter: high
+  Detail: <pedalboard.AudioProcessorParameter name="High" label="%" discrete raw_value=0.5 value=50.0 range=(0.0, 100.0, 0.1)>
+- Parameter: low
+  Detail: <pedalboard.AudioProcessorParameter name="Low" label="%" discrete raw_value=0.5 value=50.0 range=(0.0, 100.0, 0.1)>
+- Parameter: mid
+  Detail: <pedalboard.AudioProcessorParameter name="Mid" label="%" discrete raw_value=0.5 value=50.0 range=(0.0, 100.0, 0.1)>
+- Parameter: mid_frequency
+  Detail: <pedalboard.AudioProcessorParameter name="Mid Frequency" label="%" discrete raw_value=0.5 value=50.0 range=(0.0, 100.0, 0.1)>
+- Parameter: input_gain_db
+  Detail: <pedalboard.AudioProcessorParameter name="Input Gain" label="dB" discrete raw_value=0.5 value=0.0 range=(-12.0, 12.0, 0.5)>
+
+========== [ MODEL: F-Fuzz ] ==========
+- Parameter: pedal_model
+  Detail: <pedalboard.AudioProcessorParameter name="Pedal Model" discrete raw_value=0.45 value="F-Fuzz" (13 valid string values)>
+- Parameter: volume
+  Detail: <pedalboard.AudioProcessorParameter name="Volume" label="%" discrete raw_value=0.5 value=50.0 range=(0.0, 100.0, 0.1)>
+- Parameter: fuzz
+  Detail: <pedalboard.AudioProcessorParameter name="Fuzz" label="%" discrete raw_value=0.5 value=50.0 range=(0.0, 100.0, 0.1)>
+- Parameter: input_gain_db
+  Detail: <pedalboard.AudioProcessorParameter name="Input Gain" label="dB" discrete raw_value=0.5 value=0.0 range=(-12.0, 12.0, 0.5)>
+
+========== [ MODEL: M-Fuzz ] ==========
+- Parameter: pedal_model
+  Detail: <pedalboard.AudioProcessorParameter name="Pedal Model" discrete raw_value=0.5 value="M-Fuzz" (13 valid string values)>
+- Parameter: volume
+  Detail: <pedalboard.AudioProcessorParameter name="Volume" label="%" discrete raw_value=0.5 value=50.0 range=(0.0, 100.0, 0.1)>
+- Parameter: sustain
+  Detail: <pedalboard.AudioProcessorParameter name="Sustain" label="%" discrete raw_value=0.5 value=50.0 range=(0.0, 100.0, 0.1)>
+- Parameter: tone
+  Detail: <pedalboard.AudioProcessorParameter name="Tone" label="%" discrete raw_value=0.5 value=50.0 range=(0.0, 100.0, 0.1)>
+- Parameter: input_gain_db
+  Detail: <pedalboard.AudioProcessorParameter name="Input Gain" label="dB" discrete raw_value=0.5 value=0.0 range=(-12.0, 12.0, 0.5)>
+
+========== [ MODEL: T-Boost ] ==========
+- Parameter: pedal_model
+  Detail: <pedalboard.AudioProcessorParameter name="Pedal Model" discrete raw_value=0.55 value="T-Boost" (13 valid string values)>
+- Parameter: input_gain_db
+  Detail: <pedalboard.AudioProcessorParameter name="Input Gain" label="dB" discrete raw_value=0.5 value=0.0 range=(-12.0, 12.0, 0.5)>
