@@ -30,7 +30,7 @@ SYNTH_AUDIO_DIR = "data/synthetic/Fender_Strat_Clean/audio"
 SYNTH_LABEL_DIR = "data/synthetic/Fender_Strat_Clean/labels"
 
 # =====================================================================
-# directory 생성
+# directory variables
 # =====================================================================
 os.makedirs(SYNTH_AUDIO_DIR, exist_ok=True)
 os.makedirs(SYNTH_LABEL_DIR, exist_ok=True)
@@ -39,27 +39,27 @@ os.makedirs(SYNTH_LABEL_DIR, exist_ok=True)
 # parameter 추출
 # =====================================================================
 def get_random_drive(drive_type):
-    if drive_type == "overdrive":
+    if drive_type == "overdrive": #Pedalboard 
         return {
             "hpf_freq": round(random.uniform(150.0, 250.0), 2),
-            "drive": round(random.uniform(20.0, 35.0), 2),
+            "drive": round(random.uniform(25.0, 40.0), 2),
             "lpf_freq": round(random.uniform(3000.0, 5000.0), 2),
-            "level": round(random.uniform(0.0, 8.0), 2)
+            "level": round(random.uniform(-2.0, 2.0), 2)
         }
-    elif drive_type == "distortion":
+    elif drive_type == "distortion": #Pedalboard
         return {
             "hpf_freq": round(random.uniform(50.0, 70.0), 2),
-            "dist": round(random.uniform(20.0, 35.0), 2),
+            "dist": round(random.uniform(25.0, 40.0), 2),
             "lpf_freq": round(random.uniform(3000.0, 8000.0), 2),
-            "level": round(random.uniform(0.0, 8.0), 2)
+            "level": round(random.uniform(-2.0, 2.0), 2)
         }
-    elif drive_type == "fuzz":
+    elif drive_type == "fuzz": #pedalboard
         return {
-            "fuzz": round(random.uniform(20.0, 35.0), 2),
+            "fuzz": round(random.uniform(25.0, 40.0), 2),
             "notch_freq": round(random.uniform(850.0, 1150.0), 2),
             "notch_gain": round(random.uniform(-9.0, -5.0), 2),
             "lpf_freq": round(random.uniform(2000.0, 3000.0), 2),
-            "level": round(random.uniform(0.0, 8.0), 2)
+            "level": round(random.uniform(-2.0, 2.0), 2)
         }
 
 # =====================================================================
@@ -73,7 +73,7 @@ def apply_effects(audio_data, sample_rate, comp_params, drive_type, drive_params
     return render_chain(audio_data, sample_rate, chain)
 
 # =====================================================================
-# pipeline 실행
+# pipeline
 # =====================================================================
 def generate_dataset():
     dry_files = sorted(f for f in os.listdir(DRY_AUDIO_DIR) if f.endswith(".wav"))
@@ -87,7 +87,7 @@ def generate_dataset():
         try:
             audio_data, sample_rate = sf.read(dry_path)
         except Exception as e:
-            print(f"audio 로드 실패: {filename} - {e}")
+            print(f"audio load failed: {filename} - {e}")
             continue
             
         if ENABLE_NORMALIZATION:
@@ -103,7 +103,7 @@ def generate_dataset():
                     drive_params = get_random_drive(d_type)
                     wet_audio = apply_effects(audio_data, sample_rate, comp_params, d_type, drive_params)
                     
-                    # normalization 적용.
+                    # Applying normalization.
                     if ENABLE_NORMALIZATION:
                         try:
                             audio_for_meter = wet_audio.T if wet_audio.ndim == 2 else wet_audio
@@ -114,7 +114,7 @@ def generate_dataset():
                         except ValueError:
                             pass
 
-                    # peak 검사.
+                    # peak test.
                     peak_db = 20 * np.log10(np.max(np.abs(wet_audio)) + 1e-12)
                     if peak_db >= MIN_PEAK_DB:
                         break
@@ -143,7 +143,7 @@ def generate_dataset():
                     "file_path": wet_path
                 }
                 
-                # 결과물 저장.
+                # Store results.
                 sf.write(wet_path, wet_audio, sample_rate, subtype="FLOAT")
                 with open(label_path, 'w', encoding='utf-8') as f:
                     json.dump(label_data, f, indent=4, ensure_ascii=False)
@@ -151,9 +151,9 @@ def generate_dataset():
                 total_generated += 1
                 variation_counter += 1
                 
-        print(f"처리 완료: {filename} -> {variation_counter - 1}개 생성")
+        print(f"Work Complete: {filename} -> {variation_counter - 1}�? ?��?��")
         
-    print(f"\ndataset 생성 완료. {len(dry_files)}개 파일 기준 총 {total_generated}개 생성.")
+    print(f"\ndataset Created. from {len(dry_files)} dry files ->  to {total_generated} wet files.")
 
 if __name__ == "__main__":
     generate_dataset()
