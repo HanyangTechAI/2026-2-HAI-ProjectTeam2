@@ -27,15 +27,17 @@
     ]
   },
 
-  "overdrive": {
+"overdrive": {
     "category": "gain_stage",
     "reference_pedal": { "brand": "Boss", "model": "OD-1 OverDrive" },
     "source": "pedalboard",
     "class_name": "composite",
-    "composite_of": ["Distortion", "Gain"],
+    "composite_of": ["HighpassFilter", "Distortion", "LowpassFilter", "Gain"],
     "params": [
-      { "name": "drive", "maps_to": "Distortion.drive_db", "type": "continuous", "unit": "dB", "range": [0.0, 15.0],  "options": null, "default": 6.0 },
-      { "name": "level", "maps_to": "Gain.gain_db",        "type": "continuous", "unit": "dB", "range": [-12.0, 12.0],"options": null, "default": 0.0 }
+      { "name": "hpf_freq", "maps_to": "HighpassFilter.cutoff_frequency_hz", "type": "continuous", "unit": "Hz", "range": [150.0, 250.0], "options": null, "default": 200.0 },
+      { "name": "drive", "maps_to": "Distortion.drive_db", "type": "continuous", "unit": "dB", "range": [20.0, 35.0], "options": null, "default": 25.0 },
+      { "name": "lpf_freq", "maps_to": "LowpassFilter.cutoff_frequency_hz", "type": "continuous", "unit": "Hz", "range": [3000.0, 5000.0], "options": null, "default": 4000.0 },
+      { "name": "level", "maps_to": "Gain.gain_db", "type": "continuous", "unit": "dB", "range": [0.0, 8.0], "options": null, "default": 0.0 }
     ]
   },
 
@@ -44,12 +46,15 @@
     "reference_pedal": { "brand": "Boss", "model": "DS-1 Distortion" },
     "source": "pedalboard",
     "class_name": "composite",
-    "composite_of": ["Distortion", "PeakFilter", "Gain"],
-    "fixed_params": { "PeakFilter.cutoff_frequency_hz": 1000.0 },
+    "composite_of": ["HighpassFilter", "Distortion", "Clipping", "LowpassFilter", "Gain"],
+    "fixed_params": {
+      "Clipping.threshold_db": -3.0
+    },
     "params": [
-      { "name": "dist",  "maps_to": "Distortion.drive_db", "type": "continuous", "unit": "dB", "range": [0.0, 40.0],  "options": null, "default": 15.0 },
-      { "name": "tone",  "maps_to": "PeakFilter.gain_db",  "type": "continuous", "unit": "dB", "range": [-9.0, 9.0],  "options": null, "default": 0.0 },
-      { "name": "level", "maps_to": "Gain.gain_db",        "type": "continuous", "unit": "dB", "range": [-12.0, 12.0],"options": null, "default": 0.0 }
+      { "name": "hpf_freq", "maps_to": "HighpassFilter.cutoff_frequency_hz", "type": "continuous", "unit": "Hz", "range": [32.0, 48.0], "options": null, "default": 40.0 },
+      { "name": "dist", "maps_to": "Distortion.drive_db", "type": "continuous", "unit": "dB", "range": [20.0, 35.0], "options": null, "default": 30.0 },
+      { "name": "lpf_freq", "maps_to": "LowpassFilter.cutoff_frequency_hz", "type": "continuous", "unit": "Hz", "range": [3000.0, 8000.0], "options": null, "default": 5000.0 },
+      { "name": "level", "maps_to": "Gain.gain_db", "type": "continuous", "unit": "dB", "range": [0.0, 8.0], "options": null, "default": 0.0 }
     ]
   },
 
@@ -58,13 +63,16 @@
     "reference_pedal": { "brand": "Boss", "model": "FZ-1W Waza Craft Fuzz" },
     "source": "pedalboard",
     "class_name": "composite",
-    "composite_of": ["Distortion", "PeakFilter", "Gain"],
-    "fixed_params": { "PeakFilter.cutoff_frequency_hz": 800.0 },
+    "composite_of": ["Distortion", "Clipping", "PeakFilter", "LowpassFilter", "Gain"],
+    "fixed_params": {
+      "Clipping.threshold_db": -6.0
+    },
     "params": [
-      { "name": "fuzz",  "maps_to": "Distortion.drive_db", "type": "continuous",  "unit": "dB", "range": [10.0, 50.0], "options": null,                    "default": 25.0 },
-      { "name": "tone",  "maps_to": "PeakFilter.gain_db",  "type": "continuous",  "unit": "dB", "range": [-9.0, 9.0],  "options": null,                    "default": 0.0 },
-      { "name": "level", "maps_to": "Gain.gain_db",        "type": "continuous",  "unit": "dB", "range": [-12.0, 12.0],"options": null,                    "default": 0.0 },
-      { "name": "mode",  "maps_to": "custom_clipping_curve","type": "categorical","unit": null, "range": null,          "options": ["Vintage", "Modern"], "default": "Vintage" }
+      { "name": "fuzz", "maps_to": "Distortion.drive_db", "type": "continuous", "unit": "dB", "range": [20.0, 35.0], "options": null, "default": 25.0 },
+      { "name": "notch_freq", "maps_to": "PeakFilter.cutoff_frequency_hz", "type": "continuous", "unit": "Hz", "range": [850.0, 1150.0], "options": null, "default": 1000.0 },
+      { "name": "notch_gain", "maps_to": "PeakFilter.gain_db", "type": "continuous", "unit": "dB", "range": [-9.0, -5.0], "options": null, "default": -7.0 },
+      { "name": "lpf_freq", "maps_to": "LowpassFilter.cutoff_frequency_hz", "type": "continuous", "unit": "Hz", "range": [2000.0, 3000.0], "options": null, "default": 2500.0 },
+      { "name": "level", "maps_to": "Gain.gain_db", "type": "continuous", "unit": "dB", "range": [0.0, 8.0], "options": null, "default": 0.0 }
     ]
   }
 }

@@ -4,3 +4,4 @@ librosa
 soundfile
 jsonschema
 rfc3339-validator
+pyloudnorm
