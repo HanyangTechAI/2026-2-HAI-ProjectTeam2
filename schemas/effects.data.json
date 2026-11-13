@@ -27,7 +27,7 @@
     ]
   },
 
-"overdrive": {
+  "overdrive": {
     "category": "gain_stage",
     "reference_pedal": { "brand": "Boss", "model": "OD-1 OverDrive" },
     "source": "pedalboard",
@@ -86,8 +86,8 @@
       "MultiDrivePro.pedal_model": "808-Scream"
     },
     "params": [
-      { "name": "level", "maps_to": "level", "type": "continuous", "unit": "%", "range": [0.0, 100.0], "options": null, "default": 50.0 },
-      { "name": "overdrive", "maps_to": "overdrive", "type": "continuous", "unit": "%", "range": [0.0, 100.0], "options": null, "default": 50.0 },
+      { "name": "level", "maps_to": "level", "type": "continuous", "unit": "%", "range": [45.0, 55.0], "options": null, "default": 50.0 },
+      { "name": "overdrive", "maps_to": "overdrive", "type": "continuous", "unit": "%", "range": [30.0, 100.0], "options": null, "default": 50.0 },
       { "name": "tone", "maps_to": "tone", "type": "continuous", "unit": "%", "range": [0.0, 100.0], "options": null, "default": 50.0 },
       { "name": "input_gain_db", "maps_to": "input_gain_db", "type": "continuous", "unit": "dB", "range": [-12.0, 12.0], "options": null, "default": 0.0 }
     ]
@@ -103,8 +103,8 @@
       "MultiDrivePro.pedal_model": "9-Scream"
     },
     "params": [
-      { "name": "level", "maps_to": "level", "type": "continuous", "unit": "%", "range": [0.0, 100.0], "options": null, "default": 50.0 },
-      { "name": "drive", "maps_to": "drive", "type": "continuous", "unit": "%", "range": [0.0, 100.0], "options": null, "default": 50.0 },
+      { "name": "level", "maps_to": "level", "type": "continuous", "unit": "%", "range": [45.0, 55.0], "options": null, "default": 50.0 },
+      { "name": "drive", "maps_to": "drive", "type": "continuous", "unit": "%", "range": [30.0, 100.0], "options": null, "default": 50.0 },
       { "name": "tone", "maps_to": "tone", "type": "continuous", "unit": "%", "range": [0.0, 100.0], "options": null, "default": 50.0 },
       { "name": "input_gain_db", "maps_to": "input_gain_db", "type": "continuous", "unit": "dB", "range": [-12.0, 12.0], "options": null, "default": 0.0 }
     ]
@@ -120,8 +120,8 @@
       "MultiDrivePro.pedal_model": "B-Drive"
     },
     "params": [
-      { "name": "level", "maps_to": "level", "type": "continuous", "unit": "%", "range": [0.0, 100.0], "options": null, "default": 50.0 },
-      { "name": "gain", "maps_to": "gain", "type": "continuous", "unit": "%", "range": [0.0, 100.0], "options": null, "default": 50.0 },
+      { "name": "level", "maps_to": "level", "type": "continuous", "unit": "%", "range": [45.0, 55.0], "options": null, "default": 50.0 },
+      { "name": "gain", "maps_to": "gain", "type": "continuous", "unit": "%", "range": [30.0, 100.0], "options": null, "default": 50.0 },
       { "name": "tone", "maps_to": "tone", "type": "continuous", "unit": "%", "range": [0.0, 100.0], "options": null, "default": 50.0 },
       { "name": "input_gain_db", "maps_to": "input_gain_db", "type": "continuous", "unit": "dB", "range": [-12.0, 12.0], "options": null, "default": 0.0 }
     ]
@@ -137,8 +137,8 @@
       "MultiDrivePro.pedal_model": "O-Drive"
     },
     "params": [
-      { "name": "level", "maps_to": "level", "type": "continuous", "unit": "%", "range": [0.0, 100.0], "options": null, "default": 50.0 },
-      { "name": "overdrive", "maps_to": "overdrive", "type": "continuous", "unit": "%", "range": [0.0, 100.0], "options": null, "default": 50.0 },
+      { "name": "level", "maps_to": "level", "type": "continuous", "unit": "%", "range": [45.0, 55.0], "options": null, "default": 50.0 },
+      { "name": "overdrive", "maps_to": "overdrive", "type": "continuous", "unit": "%", "range": [30.0, 100.0], "options": null, "default": 50.0 },
       { "name": "input_gain_db", "maps_to": "input_gain_db", "type": "continuous", "unit": "dB", "range": [-12.0, 12.0], "options": null, "default": 0.0 }
     ]
   },
@@ -153,8 +153,8 @@
       "MultiDrivePro.pedal_model": "S-Drive"
     },
     "params": [
-      { "name": "level", "maps_to": "level", "type": "continuous", "unit": "%", "range": [0.0, 100.0], "options": null, "default": 50.0 },
-      { "name": "overdrive", "maps_to": "overdrive", "type": "continuous", "unit": "%", "range": [0.0, 100.0], "options": null, "default": 50.0 },
+      { "name": "level", "maps_to": "level", "type": "continuous", "unit": "%", "range": [45.0, 55.0], "options": null, "default": 50.0 },
+      { "name": "overdrive", "maps_to": "overdrive", "type": "continuous", "unit": "%", "range": [30.0, 100.0], "options": null, "default": 50.0 },
       { "name": "tone", "maps_to": "tone", "type": "continuous", "unit": "%", "range": [0.0, 100.0], "options": null, "default": 50.0 },
       { "name": "input_gain_db", "maps_to": "input_gain_db", "type": "continuous", "unit": "dB", "range": [-12.0, 12.0], "options": null, "default": 0.0 }
     ]
@@ -170,8 +170,8 @@
       "MultiDrivePro.pedal_model": "One-Distortion"
     },
     "params": [
-      { "name": "level", "maps_to": "level", "type": "continuous", "unit": "%", "range": [0.0, 100.0], "options": null, "default": 50.0 },
-      { "name": "distortion", "maps_to": "distortion", "type": "continuous", "unit": "%", "range": [0.0, 100.0], "options": null, "default": 50.0 },
+      { "name": "level", "maps_to": "level", "type": "continuous", "unit": "%", "range": [45.0, 55.0], "options": null, "default": 50.0 },
+      { "name": "distortion", "maps_to": "distortion", "type": "continuous", "unit": "%", "range": [30.0, 100.0], "options": null, "default": 50.0 },
       { "name": "tone", "maps_to": "tone", "type": "continuous", "unit": "%", "range": [0.0, 100.0], "options": null, "default": 50.0 },
       { "name": "input_gain_db", "maps_to": "input_gain_db", "type": "continuous", "unit": "dB", "range": [-12.0, 12.0], "options": null, "default": 0.0 }
     ]
@@ -187,8 +187,8 @@
       "MultiDrivePro.pedal_model": "BAT-Distortion"
     },
     "params": [
-      { "name": "volume", "maps_to": "volume", "type": "continuous", "unit": "%", "range": [0.0, 100.0], "options": null, "default": 50.0 },
-      { "name": "distortion", "maps_to": "distortion", "type": "continuous", "unit": "%", "range": [0.0, 100.0], "options": null, "default": 50.0 },
+      { "name": "volume", "maps_to": "volume", "type": "continuous", "unit": "%", "range": [45.0, 55.0], "options": null, "default": 50.0 },
+      { "name": "distortion", "maps_to": "distortion", "type": "continuous", "unit": "%", "range": [30.0, 100.0], "options": null, "default": 50.0 },
       { "name": "filter", "maps_to": "filter", "type": "continuous", "unit": "%", "range": [0.0, 100.0], "options": null, "default": 50.0 },
       { "name": "input_gain_db", "maps_to": "input_gain_db", "type": "continuous", "unit": "dB", "range": [-12.0, 12.0], "options": null, "default": 0.0 }
     ]
@@ -204,8 +204,8 @@
       "MultiDrivePro.pedal_model": "XXL-Distortion"
     },
     "params": [
-      { "name": "output", "maps_to": "output", "type": "continuous", "unit": "%", "range": [0.0, 100.0], "options": null, "default": 50.0 },
-      { "name": "distortion", "maps_to": "distortion", "type": "continuous", "unit": "%", "range": [0.0, 100.0], "options": null, "default": 50.0 },
+      { "name": "output", "maps_to": "output", "type": "continuous", "unit": "%", "range": [45.0, 55.0], "options": null, "default": 50.0 },
+      { "name": "distortion", "maps_to": "distortion", "type": "continuous", "unit": "%", "range": [30.0, 100.0], "options": null, "default": 50.0 },
       { "name": "input_gain_db", "maps_to": "input_gain_db", "type": "continuous", "unit": "dB", "range": [-12.0, 12.0], "options": null, "default": 0.0 }
     ]
   },
@@ -220,8 +220,8 @@
       "MultiDrivePro.pedal_model": "M-Distortion"
     },
     "params": [
-      { "name": "level", "maps_to": "level", "type": "continuous", "unit": "%", "range": [0.0, 100.0], "options": null, "default": 50.0 },
-      { "name": "distortion", "maps_to": "distortion", "type": "continuous", "unit": "%", "range": [0.0, 100.0], "options": null, "default": 50.0 },
+      { "name": "level", "maps_to": "level", "type": "continuous", "unit": "%", "range": [45.0, 55.0], "options": null, "default": 50.0 },
+      { "name": "distortion", "maps_to": "distortion", "type": "continuous", "unit": "%", "range": [30.0, 100.0], "options": null, "default": 50.0 },
       { "name": "high", "maps_to": "high", "type": "continuous", "unit": "%", "range": [0.0, 100.0], "options": null, "default": 50.0 },
       { "name": "low", "maps_to": "low", "type": "continuous", "unit": "%", "range": [0.0, 100.0], "options": null, "default": 50.0 },
       { "name": "mid", "maps_to": "mid", "type": "continuous", "unit": "%", "range": [0.0, 100.0], "options": null, "default": 50.0 },
@@ -240,8 +240,8 @@
       "MultiDrivePro.pedal_model": "F-Fuzz"
     },
     "params": [
-      { "name": "volume", "maps_to": "volume", "type": "continuous", "unit": "%", "range": [0.0, 100.0], "options": null, "default": 50.0 },
-      { "name": "fuzz", "maps_to": "fuzz", "type": "continuous", "unit": "%", "range": [0.0, 100.0], "options": null, "default": 50.0 },
+      { "name": "volume", "maps_to": "volume", "type": "continuous", "unit": "%", "range": [45.0, 55.0], "options": null, "default": 50.0 },
+      { "name": "fuzz", "maps_to": "fuzz", "type": "continuous", "unit": "%", "range": [30.0, 100.0], "options": null, "default": 50.0 },
       { "name": "input_gain_db", "maps_to": "input_gain_db", "type": "continuous", "unit": "dB", "range": [-12.0, 12.0], "options": null, "default": 0.0 }
     ]
   },
@@ -256,8 +256,8 @@
       "MultiDrivePro.pedal_model": "M-Fuzz"
     },
     "params": [
-      { "name": "volume", "maps_to": "volume", "type": "continuous", "unit": "%", "range": [0.0, 100.0], "options": null, "default": 50.0 },
-      { "name": "sustain", "maps_to": "sustain", "type": "continuous", "unit": "%", "range": [0.0, 100.0], "options": null, "default": 50.0 },
+      { "name": "volume", "maps_to": "volume", "type": "continuous", "unit": "%", "range": [45.0, 55.0], "options": null, "default": 50.0 },
+      { "name": "sustain", "maps_to": "sustain", "type": "continuous", "unit": "%", "range": [30.0, 100.0], "options": null, "default": 50.0 },
       { "name": "tone", "maps_to": "tone", "type": "continuous", "unit": "%", "range": [0.0, 100.0], "options": null, "default": 50.0 },
       { "name": "input_gain_db", "maps_to": "input_gain_db", "type": "continuous", "unit": "dB", "range": [-12.0, 12.0], "options": null, "default": 0.0 }
     ]
@@ -276,6 +276,4 @@
       { "name": "input_gain_db", "maps_to": "input_gain_db", "type": "continuous", "unit": "dB", "range": [-12.0, 12.0], "options": null, "default": 0.0 }
     ]
   }
-
-
 }

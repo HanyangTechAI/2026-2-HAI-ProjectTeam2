@@ -12,7 +12,7 @@ from effects import render_chain
 # =====================================================================
 # configuration 변수
 # =====================================================================
-VARIATIONS_PER_DRIVE = 1 ####### 1개의 이펙터로 1개의 dry 음원 당 생성할 wet 음원 개수
+VARIATIONS_PER_DRIVE = 5 ####### 1개의 이펙터로 1개의 dry 음원 당 생성할 wet 음원 개수
 ENABLE_NORMALIZATION = False
 TARGET_LUFS = -24.0
 
@@ -71,27 +71,27 @@ def get_random_drive(drive_type):
         params = {"input_gain_db": DEFAULT_INPUT_GAIN_DB}
         
         if drive_type == "808-Scream":
-            params.update({"level": round(random.uniform(45.0, 55.0), 2), "overdrive": round(random.uniform(30.0, 100.0), 2), "tone": round(random.uniform(30.0, 100.0), 2)})
+            params.update({"level": round(random.uniform(45.0, 55.0), 2), "overdrive": round(random.uniform(30.0, 100.0), 2), "tone": round(random.uniform(0.0, 100.0), 2)})
         elif drive_type == "9-Scream":
-            params.update({"level": round(random.uniform(45.0, 55.0), 2), "drive": round(random.uniform(30.0, 100.0), 2), "tone": round(random.uniform(30.0, 100.0), 2)})
+            params.update({"level": round(random.uniform(45.0, 55.0), 2), "drive": round(random.uniform(30.0, 100.0), 2), "tone": round(random.uniform(0.0, 100.0), 2)})
         elif drive_type == "B-Drive":
-            params.update({"level": round(random.uniform(45.0, 55.0), 2), "gain": round(random.uniform(30.0, 100.0), 2), "tone": round(random.uniform(30.0, 100.0), 2)})
+            params.update({"level": round(random.uniform(45.0, 55.0), 2), "gain": round(random.uniform(30.0, 100.0), 2), "tone": round(random.uniform(0.0, 100.0), 2)})
         elif drive_type == "O-Drive":
             params.update({"level": round(random.uniform(45.0, 55.0), 2), "overdrive": round(random.uniform(30.0, 100.0), 2)})
         elif drive_type == "S-Drive":
-            params.update({"level": round(random.uniform(45.0, 55.0), 2), "overdrive": round(random.uniform(30.0, 100.0), 2), "tone": round(random.uniform(30.0, 100.0), 2)})
+            params.update({"level": round(random.uniform(45.0, 55.0), 2), "overdrive": round(random.uniform(30.0, 100.0), 2), "tone": round(random.uniform(0.0, 100.0), 2)})
         elif drive_type == "One-Distortion":
-            params.update({"level": round(random.uniform(45.0, 55.0), 2), "distortion": round(random.uniform(30.0, 100.0), 2), "tone": round(random.uniform(30.0, 100.0), 2)})
+            params.update({"level": round(random.uniform(45.0, 55.0), 2), "distortion": round(random.uniform(30.0, 100.0), 2), "tone": round(random.uniform(0.0, 100.0), 2)})
         elif drive_type == "BAT-Distortion":
-            params.update({"volume": round(random.uniform(45.0, 55.0), 2), "distortion": round(random.uniform(30.0, 100.0), 2), "filter": round(random.uniform(30.0, 100.0), 2)})
+            params.update({"volume": round(random.uniform(45.0, 55.0), 2), "distortion": round(random.uniform(30.0, 100.0), 2), "filter": round(random.uniform(0.0, 100.0), 2)})
         elif drive_type == "XXL-Distortion":
             params.update({"output": round(random.uniform(45.0, 55.0), 2), "distortion": round(random.uniform(30.0, 100.0), 2)})
         elif drive_type == "M-Distortion":
-            params.update({"level": round(random.uniform(45.0, 55.0), 2), "distortion": round(random.uniform(30.0, 100.0), 2), "high": round(random.uniform(30.0, 100.0), 2), "low": round(random.uniform(30.0, 100.0), 2), "mid": round(random.uniform(30.0, 100.0), 2), "mid_frequency": round(random.uniform(30.0, 100.0), 2)})
+            params.update({"level": round(random.uniform(45.0, 55.0), 2), "distortion": round(random.uniform(30.0, 100.0), 2), "high": round(random.uniform(0.0, 100.0), 2), "low": round(random.uniform(0.0, 100.0), 2), "mid": round(random.uniform(0.0, 100.0), 2), "mid_frequency": round(random.uniform(0.0, 100.0), 2)})
         elif drive_type == "F-Fuzz":
             params.update({"volume": round(random.uniform(45.0, 55.0), 2), "fuzz": round(random.uniform(30.0, 100.0), 2)})
         elif drive_type == "M-Fuzz":
-            params.update({"volume": round(random.uniform(45.0, 55.0), 2), "sustain": round(random.uniform(30.0, 100.0), 2), "tone": round(random.uniform(30.0, 100.0), 2)})
+            params.update({"volume": round(random.uniform(45.0, 55.0), 2), "sustain": round(random.uniform(30.0, 100.0), 2), "tone": round(random.uniform(0.0, 100.0), 2)})
         elif drive_type == "T-Boost":
             pass
             
@@ -115,10 +115,11 @@ def generate_dataset():
     ##################################################################################
     ###################################### 적용하고 싶은 이펙터만 작성하기.
     drive_types = [
-       # "overdrive", "distortion", "fuzz",  페달보드 기본 함수로 만든 애들 
-        "808-Scream", "9-Scream", "B-Drive", "O-Drive", "S-Drive", 
-        "One-Distortion", "BAT-Distortion", "XXL-Distortion", 
-        "M-Distortion", "F-Fuzz", "M-Fuzz", "T-Boost"
+       # "overdrive", "distortion", "fuzz",   페달보드 기본 함수로 만든 애들 
+       # 비활성화 상태: "T-Boost", "9-Scream", "S-Drive", "M-Distortion", "XXL-Distortion",
+        "808-Scream", "B-Drive", "O-Drive",
+        "One-Distortion", "BAT-Distortion",
+        "F-Fuzz", "M-Fuzz"
     ]
     ######################################################################################
     total_generated = 0
