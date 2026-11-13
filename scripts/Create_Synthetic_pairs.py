@@ -50,7 +50,7 @@ def get_random_drive(drive_type):
         }
     elif drive_type == "distortion": #Pedalboard
         return {
-            "hpf_freq": round(random.uniform(50.0, 70.0), 2),
+            "hpf_freq": round(random.uniform(32.0, 48.0), 2),
             "dist": round(random.uniform(25.0, 40.0), 2),
             "lpf_freq": round(random.uniform(3000.0, 8000.0), 2),
             "level": round(random.uniform(-2.0, 2.0), 2)
