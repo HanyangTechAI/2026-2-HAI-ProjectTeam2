@@ -12,7 +12,7 @@ from effects import render_chain
 # =====================================================================
 # configuration 변수
 # =====================================================================
-VARIATIONS_PER_DRIVE = 1
+VARIATIONS_PER_DRIVE = 1 ####### 1개의 이펙터로 1개의 dry 음원 당 생성할 wet 음원 개수
 ENABLE_NORMALIZATION = False
 TARGET_LUFS = -24.0
 
@@ -157,10 +157,16 @@ def generate_dataset():
                         except ValueError:
                             pass
 
-                    # peak test.
+                    # peak test 및 바이패스(원음 통과) 여부 검증
                     peak_db = 20 * np.log10(np.max(np.abs(wet_audio)) + 1e-12)
-                    if peak_db >= MIN_PEAK_DB:
+                    max_diff = np.max(np.abs(audio_data - wet_audio))
+
+                    if peak_db >= MIN_PEAK_DB and max_diff > 1e-4:
                         break
+                    elif max_diff <= 1e-4:
+                        print(f"[경고] 바이패스 감지됨 ({filename} - {d_type}). 플러그인 캐시 초기화 후 재시도합니다.")
+                        from effects.render import _VST_CACHE
+                        _VST_CACHE.clear()
 
                 wet_filename = f"wet_{base_name}_{d_type}_{variation_counter:03d}.wav"
                 label_filename = f"params_{base_name}_{d_type}_{variation_counter:03d}.json"
