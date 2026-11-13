@@ -16,10 +16,11 @@ from functools import lru_cache
 from pathlib import Path
 
 import pedalboard
-from pedalboard import Pedalboard
+from pedalboard import Pedalboard, load_plugin
 
 EFFECTS_PATH = Path(__file__).resolve().parent.parent / "schemas" / "effects.data.json"
 
+_VST_CACHE = {}
 
 @lru_cache(maxsize=None)
 def load_effects(path=EFFECTS_PATH):
@@ -50,10 +51,15 @@ def build_effect(effect_type, values, effects=None):
 
     # 새로 추가된 VST 플러그인 지원 분기
     if definition["source"] == "vst":
-        from pedalboard import load_plugin
         vst_name = definition["class_name"]
-        vst_path = f"./effects/VST_files/{vst_name}.vst3"
-        plugin = load_plugin(vst_path)
+        folder_name = "MultiDrive PRO" if vst_name == "MultiDrivePro" else vst_name
+        
+        # 최상위 번들 디렉터리가 아닌 내부 실제 바이너리 파일(Binary File) 경로 지정
+        vst_path = rf"C:\Program Files\Common Files\VST3\Audified\{folder_name}.vst3\Contents\x86_64-win\{folder_name}.vst3"
+
+        if vst_path not in _VST_CACHE:
+            _VST_CACHE[vst_path] = load_plugin(vst_path)
+        plugin = _VST_CACHE[vst_path]
 
         if hasattr(plugin, 'bypass'):
             plugin.bypass = False
