@@ -22,7 +22,10 @@ dry 신호 `x_dry`, 목표 신호 `x_ref`, 사용자 보유 이펙터 집합 `E`
 ├── schemas/      # 공통 이펙터 스키마, 정의 데이터 및 검증 스크립트
 ├── effects/      # 이펙터 라이브러리, 체인 렌더링 엔진
 ├── metrics/      # 유사도 지표 및 평가 코드
-├── search/       # 조합 선택 및 파라미터 최적화 엔진
+├── search/       # 기존 Step 0 random search / CMA-ES 실험
+├── estimation/   # CNN 데이터 준비·학습·추론·평가·CMA-ES 연결
+├── configs/      # CNN 오디오 설정과 검증 환경의 패키지 버전
+├── tests/        # CNN 파이프라인 테스트
 ├── data/         # 대용량 파일은 Drive, 작은 테스트 샘플만 GitHub에 보관
 │   ├── dry/          # dry 기타 샘플
 │   ├── synthetic/    # 합성한 (dry, params, wet) 페어
@@ -41,10 +44,13 @@ pip install -r requirements.txt
 python schemas/validate.py
 ```
 
-현재는 스키마와 폴더 구조를 준비한 단계입니다. 검증 스크립트는 이펙터 정의가 JSON Schema를 만족하는지 확인합니다.
+검증 스크립트는 이펙터 정의가 JSON Schema를 만족하는지 확인합니다.
+현재 스키마 기반 드라이브 렌더러, Step 0 탐색 실험과 CNN 초기 추정 파이프라인을 제공합니다.
 
 초기 체인 순서는 컴프 → 드라이브류(overdrive/distortion/fuzz 중 하나) → 고정 앰프 → EQ입니다.
-Step 0에서는 random search / CMA-ES로 시작하며, 실제 렌더링·탐색 로직은 이후 구현합니다.
+현재 CNN 버전은 드라이브 최대 한 개와 bypass만 출력하며 앰프, 컴프레서, EQ는 적용하지 않습니다.
+종류 분류와 노브 예측을 분리한 CNN 실험은
+[estimation/EXPERIMENTS.md](estimation/EXPERIMENTS.md)를 참고하세요.
 
 ## 개발 단계
 
@@ -57,6 +63,9 @@ Step 0에서는 random search / CMA-ES로 시작하며, 실제 렌더링·탐색
 | Step 4 | 실물 페달 캡처, 앰프/공간계 확장 |
 
 ## 문서
+
+CNN 초기 추정 모델의 설치, 데이터 준비, 학습, 추론 및 평가 명령은
+[estimation/README.md](estimation/README.md)를 참고하세요.
 
 프로젝트 일정, 역할 분담, 개발 현황 및 논의 사항은 Notion에서 관리합니다.
 
