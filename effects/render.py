@@ -15,8 +15,12 @@ import json
 from functools import lru_cache
 from pathlib import Path
 
+import pedalboard
+from pedalboard import Pedalboard, load_plugin
+
 EFFECTS_PATH = Path(__file__).resolve().parent.parent / "schemas" / "effects.data.json"
 
+_VST_CACHE = {}
 
 @lru_cache(maxsize=None)
 def load_effects(path=EFFECTS_PATH):
@@ -46,6 +50,33 @@ def build_effect(effect_type, values, effects=None):
     if effect_type not in effects:
         raise ValueError(f"알 수 없는 effect_type: {effect_type}")
     definition = effects[effect_type]
+
+    # 새로 추가된 VST 플러그인 지원 분기
+    if definition["source"] == "vst":
+        vst_name = definition["class_name"]
+        folder_name = "MultiDrive PRO" if vst_name == "MultiDrivePro" else vst_name
+        
+        # 최상위 번들 디렉터리가 아닌 내부 실제 바이너리 파일(Binary File) 경로 지정
+        vst_path = rf"C:\Program Files\Common Files\VST3\Audified\{folder_name}.vst3\Contents\x86_64-win\{folder_name}.vst3"
+
+        if vst_path not in _VST_CACHE:
+            _VST_CACHE[vst_path] = load_plugin(vst_path)
+        plugin = _VST_CACHE[vst_path]
+
+        if hasattr(plugin, 'bypass'):
+            plugin.bypass = False
+        
+        if definition.get("fixed_params"):
+            for key, value in definition["fixed_params"].items():
+                prop_name = key.split(".")[-1]
+                setattr(plugin, prop_name, value)
+                
+        for param in definition["params"]:
+            if param["name"] in values:
+                prop_name = param["maps_to"].split(".")[-1]
+                setattr(plugin, prop_name, values[param["name"]])
+                
+        return [plugin]
 
     if definition["source"] != "pedalboard":
         # 외부 플러그인(VST) 지원은 Step 1 드라이브 차별화 결정 후 추가합니다.
