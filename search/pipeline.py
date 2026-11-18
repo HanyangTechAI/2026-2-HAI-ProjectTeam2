@@ -358,6 +358,7 @@ def search_and_rank_chains(
                 initial_guesses[etypes_key] = ch
             candidate_chains = converted
 
+    # 1. 인벤토리 필터링
     if owned_effect_types is not None:
         valid_candidates, dropped = filter_candidates_by_inventory(candidate_chains, owned_effect_types)
     else:
