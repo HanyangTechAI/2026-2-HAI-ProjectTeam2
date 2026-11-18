@@ -1,191 +1,127 @@
-# 드라이브 분류와 overdrive 노브 예측 분리 실험
+# VST7 학습 결과
 
-기존 결합 모델에서 종류 분류와 노브 예측을 분리해 각각 검증한다.
-입력은 기존과 같은 Dry/reference 쌍과 공유 CNN Encoder다.
+2026-11-17 완료. 이전 3종 CNN의 로컬 학습 결과·데이터 캐시·진행 문서는 제거했다.
+현재 산출물은 `outputs/vst7/`만 사용한다. 공유 원본은 수정하지 않았다.
 
-| 실험 | 학습 데이터 | 출력 | 학습 손실 | 주요 검증 지표 |
-|---|---|---|---|---|
-| `drive_classification` | overdrive / distortion / fuzz, bypass 제외 | 3종 확률 | Cross-Entropy만 사용 | accuracy, macro F1, 종류별 recall, confusion matrix |
-| `overdrive_regression` | overdrive만 포함, bypass 제외 | 정규화된 drive / level | Huber만 사용 | 노브별 normalized MAE·RMSE, dB MAE, 기본값 대비 오디오 거리 |
+## 데이터와 학습 설정
 
-회귀 모델은 종류를 overdrive로 고정한다. 분류 헤드와 분류 손실을 만들지 않으며,
-한 종류만 있다는 이유로 accuracy=100%를 보고하지 않는다. 해당 값은 `null`로 기록한다.
-분류 모델에는 노브 회귀 헤드와 회귀 손실을 만들지 않는다.
-기존 결합 모델의 checkpoint는 기본 `joint` 설정으로 계속 로드할 수 있다.
+`data/synthetic/step1_vst_v0_임시`의 VST7 2,730쌍, 생성 Dry 78개를 사용했다.
+학습·렌더링 입력은 `manifest.dry_id_map[].render_input`의 peak −12 dBFS Dry다.
+라벨의 다른 PC 절대경로는 사용하지 않고 현재 `audio/<target_id>.wav`를 연결했다.
 
-## 결과 폴더
-
-```text
-outputs/
-├── archive/
-│   ├── legacy_before_task_split/    # 이전 검증·데이터·학습 결과 보관
-│   └── task_split_smoke/            # 분리 모델의 소량 기능 검증
-├── datasets/
-│   ├── drive_classification/        # 3종 분류용 데이터
-│   └── overdrive_regression/        # overdrive 전용 데이터
-└── experiments/
-    ├── source_index.json            # 기존 원본 녹음 ID와 파일 위치
-    ├── plan.json                    # 설정과 데이터 구성
-    ├── drive_classification/
-    │   ├── model/                   # best.pt, last.pt, history.json
-    │   ├── validation/              # summary.json, samples.jsonl
-    │   └── test/
-    └── overdrive_regression/
-        ├── model/
-        ├── validation/
-        └── test/
-```
-
-이전 결과 6개 폴더는 삭제하지 않고 `archive/legacy_before_task_split`에 모았다.
-원래 위치와 보관 위치는 그 안의 `moves.json`에 기록되어 있다.
-원본 공유 드라이브 오디오는 수정하지 않는다. `outputs`의 산출물은 Git에서 제외된다.
-
-## 데이터 조건
-
-- 기존 원본 녹음 78개를 같은 seed=42로 분리: train 54 / validation 12 / test 12.
-- 원본마다 각 드라이브에 대해 노브 설정 5개를 스키마 범위에서 생성.
-- 분류 데이터: 총 1,170쌍. train 810 / validation 180 / test 180, 종류별 균등.
-- 회귀 데이터: 총 390쌍. train 270 / validation 60 / test 60.
-- 회귀 폴더는 분류 데이터의 overdrive 쌍을 파일 그대로 복사해 구성한다.
-  두 실험의 원본별 split과 overdrive의 Dry/Wet·정답 값은 동일하다.
-- mono / 22050 Hz / 기본 4초, STFT 1024·256, mel 64.
-  원본 2.5초 뒤의 나머지는 우측 zero padding하며 상대 음량을 유지한다.
-- `fuzz.mode`는 현재 렌더링에 반영되지 않아 Vintage로 고정.
-
-정답은 기존 Pedalboard 렌더러를 사용한 소프트웨어 처리의 종류와 노브다.
-중립 tone과 겹치는 drive 설정에서는 서로 다른 종류가 같은 소리를 낼 수 있으므로
-분류 성능의 식별 한계는 남아 있다. 이번 분리 실험에서 렌더러 알고리즘은 바꾸지 않는다.
-
-## 실행
-
-저장소 루트에서 Conda 환경을 활성화한다.
-
-```powershell
-conda activate .\.conda-cnn
-```
-
-새 output 경로로 두 실험 전체를 실행하려면:
-
-```powershell
-python -m estimation.experiments run --dry-dir data/dry/Fender_Strat_Clean/audio --output-root outputs/new_run --variations 5 --epochs 30 --seed 42 --batch-size 16 --threads 4
-```
-
-원본 ID를 이미 정의한 경우 `--dry-dir` 대신 `--source-index`를 사용한다.
-아래는 현재 실험에 사용한 원본 인덱스로 데이터 준비와 학습을 나눠 실행한 명령이다.
-이미 존재하는 데이터나 실험 결과는 덮어쓰지 않으므로 재실행에는 새 output 경로를 사용한다.
-
-```powershell
-python -m estimation.experiments prepare --source-index outputs/experiments/source_index.json --output-root outputs --audio-config configs/cnn_audio.json --variations 5 --seed 42
-python -m estimation.experiments train --output-root outputs --epochs 30 --seed 42 --batch-size 16 --threads 4
-```
-
-학습 중 log-mel을 RAM에 캐시하여 매 epoch의 반복 추출을 줄인다.
-모델은 동일한 CNN 블록(16/32/64/128)을 사용하며 Adam, learning rate=0.001,
-batch size=16, 최대 30 epoch로 학습한다. validation loss 최저 checkpoint를 선택한 뒤
-validation과 test를 평가한다. test 결과로 checkpoint를 선택하거나 재학습하지 않는다.
-
-분리 모델의 평가를 다시 실행하려면:
-
-```powershell
-python -m estimation.experiments evaluate --manifest outputs/datasets/drive_classification/manifest.jsonl --checkpoint outputs/experiments/drive_classification/model/best.pt --split validation --output outputs/experiments/drive_classification/recheck_validation
-python -m estimation.experiments evaluate --manifest outputs/datasets/overdrive_regression/manifest.jsonl --checkpoint outputs/experiments/overdrive_regression/model/best.pt --split validation --output outputs/experiments/overdrive_regression/recheck_validation
-```
-
-결합 모델용 `estimation.infer` / `estimation.evaluate`와 구분해 분리 모델에는 위 명령을 사용한다.
-
-## 지표 해석
-
-3종 분류는 균등 데이터이므로 무작위 선택의 기대 정확도는 약 33.3%다.
-accuracy와 macro F1 및 혼동행렬을 함께 확인한다.
-
-overdrive 노브는 drive [0,15] dB, level [-12,12] dB를 각각 [0,1]로 변환해 예측한다.
-normalized MAE 0.1은 해당 노브 전체 범위의 10%만큼 평균 오차가 난다는 의미다.
-`mae_in_original_units`는 실제 dB 단위 오차다.
-`all_knobs_within_0_1_rate`는 두 노브의 정규화 오차가 모두 0.1 이하인 샘플 비율이다.
-
-회귀 평가에는 같은 데이터에서 스키마 기본값(drive=6, level=0)의 노브 오차와
-렌더링 거리도 함께 저장한다. 종류를 알려준 노브 초기값 검증이므로 CMA-ES는 적용하지 않는다.
-오디오 거리는 기존 프로젝트 지표를 사용하며 작을수록 좋다.
-
-## 실행 결과 — 2026-11-10
-
-### 3종 드라이브 분류
-
-validation CE가 가장 낮은 **30 epoch** checkpoint를 선택했다.
-
-| Split | 샘플 수 | Accuracy | Macro F1 |
+| Split | 독립 Dry 원본 | 쌍 | 드라이브별 쌍 |
 |---|---:|---:|---:|
-| validation | 180 | 60.56% (109/180) | 0.5622 |
-| test | 180 | 57.78% (104/180) | 0.5406 |
+| train | 54 | 1,890 | 270 |
+| validation | 12 | 420 | 60 |
+| test | 12 | 420 | 60 |x`
 
-| 정답 종류 | Validation recall | Test recall |
+원본 ID와 생성 Dry의 내용 해시 모두 split 사이에 겹치지 않는다.
+7종 외에 컴프·EQ의 사용 여부와 노브도 함께 학습했다. 앰프는 렌더링하지 않는다.
+
+- 가중치를 공유하는 paired CNN, 채널 8/16/32/64, 주파수 영역 4개 보존, hidden 256.
+- 학습 입력: 22,050 Hz, 2.5초, 64-band log-mel. 추가 peak 정규화 없음.
+- 렌더링 입력: 생성 Dry의 원래 44,100 Hz를 유지하고, 렌더링 후 평가 표본율로 변환.
+- Adam, 초기 LR 0.001, cosine decay, batch 16, seed 42, CPU 4 threads, 30epoch.
+- loss: drive CE + stage BCE + active-knob Huber + 0.1 × distance auxiliary Huber.
+- **best checkpoint는 validation 전체 loss 최소인 epoch 20**. test로 모델을 선택하지 않았다.
+
+## 분류와 구조 복원 — 각 split 전체 420개
+
+| 지표 | Validation | Test |
 |---|---:|---:|
-| overdrive | 90.00% | 85.00% |
-| distortion | 18.33% | 18.33% |
-| fuzz | 73.33% | 70.00% |
+| 드라이브 Top-1 accuracy | 86.90% | **87.62%** |
+| 드라이브 Top-3 정답 포함률 | 97.38% | **97.38%** |
+| 드라이브 macro F1 | 0.8678 | 0.8764 |
+| 컴프 사용 여부 accuracy | 65.95% | 65.48% |
+| EQ 사용 여부 accuracy | 84.05% | 78.57% |
+| 드라이브 + 컴프·EQ 사용 여부 모두 정답 | 47.14% | **47.38%** |
 
-Test 혼동행렬은 행이 정답, 열이 예측이다.
+드라이브 분류 정확도와 전체 체인 구조 정확도는 다르다. 특히 컴프 포함 여부는 아직 개선이 필요하다.
 
-| 정답 / 예측 | overdrive | distortion | fuzz |
+## 노브 normalized MAE
+
+0~1로 정규화한 노브의 평균 절대 오차이며 낮을수록 좋다. 아래 값은 정답 체인에 실제 있는
+효과의 head를 평가한 조건부 지표다. 잘못 분류한 구조에 대한 패널티를 포함한 전체 체인 정확도가 아니다.
+
+| 효과 | Validation CNN | Test CNN | Test 기본 노브 |
 |---|---:|---:|---:|
-| overdrive | 51 | 9 | 0 |
-| distortion | 25 | 11 | 24 |
-| fuzz | 7 | 11 | 42 |
+| 808_scream | 0.2060 | 0.1931 | 0.2726 |
+| b_drive | 0.1752 | 0.1686 | 0.2698 |
+| o_drive | 0.1914 | 0.1413 | 0.2472 |
+| one_distortion | 0.1633 | 0.1711 | 0.2539 |
+| bat_distortion | 0.1851 | 0.1692 | 0.2562 |
+| f_fuzz | 0.2245 | 0.2093 | 0.2618 |
+| m_fuzz | 0.1972 | 0.1866 | 0.2589 |
+| compressor | 0.2249 | 0.2342 | 0.2717 |
+| eq_3band | 0.1981 | 0.2043 | 0.2459 |
 
-무작위 3종 선택의 기대 정확도보다 높지만 **distortion 구분력은 부족하다**.
-현재 렌더러가 같은 Distortion 처리와 겹치는 drive 범위를 공유한다는 조건을 함께 고려해야 한다.
-이번 실험으로 실물 페달 3종을 구분한다고 해석하지 않는다.
+## 실제 렌더링 유사도 d
 
-상세 결과:
+공통 `metrics.combined`의 스펙트럼·다이내믹스 가중 평균을 사용했다.
 
-- [분류 validation 요약](../outputs/experiments/drive_classification/validation/summary.json)
-- [분류 test 요약](../outputs/experiments/drive_classification/test/summary.json)
-- [분류 학습 이력](../outputs/experiments/drive_classification/model/history.json)
+`d = 0.5 × spectral / 0.1642928288 + 0.5 × dynamics / 6.984483499`.
 
-### overdrive 노브 예측
+두 scale은 **train Dry/target 거리의 중앙값**으로만 정했고 validation/test에서는 고정했다.
+d는 무차원 거리이며 낮을수록 가깝다. 이전 spectral-only 점수와 직접 비교하지 않는다.
 
-30 epoch 학습 후 validation Huber가 가장 낮은 **18 epoch** checkpoint를 선택했다.
-종류는 overdrive로 고정하고 drive/level 두 노브만 예측했다. CMA-ES는 사용하지 않았다.
+실제 렌더링 평가는 각 split에서 사전 고정한 **70개(종류별 10개, Dry 원본 12개 포함)**를 사용했다.
+예측·점수를 본 뒤 쉬운 사례를 골라내지 않았다. 아래 모든 행은 같은 70개를 비교한다.
 
-| Split | 샘플 수 | 예측 normalized MAE | 기본값 normalized MAE | 두 노브 모두 정규화 오차 0.1 이하 |
-|---|---:|---:|---:|---:|
-| validation | 60 | 0.1679 | 0.2477 | 31.67% |
-| test | 60 | 0.1579 | 0.2564 | 36.67% |
-
-| Split | 노브 | 예측 MAE (dB) | 기본값 MAE (dB) | 예측 normalized MAE |
-|---|---|---:|---:|---:|
-| validation | drive | 3.098 | 3.847 | 0.2065 |
-| validation | level | 3.102 | 5.734 | 0.1293 |
-| test | drive | 2.959 | 3.901 | 0.1972 |
-| test | level | 2.845 | 6.067 | 0.1185 |
-
-| Split | 예측 노브의 평균 오디오 거리 | 기본값의 평균 오디오 거리 |
+| 렌더링 방법 | Validation 평균 d | Test 평균 d |
 |---|---:|---:|
-| validation | 0.019153 | 0.104144 |
-| test | 0.011235 | 0.098105 |
+| CNN 예측 구조 + 기본 노브 | 0.839685 | 0.731451 |
+| CNN Top-1 구조·노브 | **0.651993** | **0.549682** |
+| CNN Top-3를 렌더링해 d 최소 후보 선택 | 0.575242 | 0.492659 |
+| 정답 전체 체인·정답 노브 재렌더링 | 0.215671 | 0.219903 |
 
-지표는 기존 `log_stft_joint_active_energy_v2_floor_m80db`이며 낮을수록 좋다.
-test의 평균 normalized MAE는 기본값 대비 약 **38.4% 감소**했다.
-두 노브 모두 기본값보다 평균 오차가 작지만, dB MAE가 약 3 dB 남아 있어 정답 노브를
-정확하게 복원하는 단계라고 보기는 어렵다. 낮은 오디오 거리와 정확한 노브 복원은 별도로 해석한다.
+같은 예측 구조의 기본 노브 대비 CNN Top-1의 d는 validation **22.35%**, test **24.85%** 감소했다.
+이 비교에는 CMA-ES 노브 최적화를 사용하지 않았다.
 
-상세 결과:
+**정답 체인 재렌더링도 0이 아니다.** 설치된 VST와 저장 데이터 사이의 재현 오차가 있으므로
+전체 d를 CNN만의 오차로 해석하면 안 된다. 정답 재렌더링 점수도 이 렌더러 아래의 비교 기준이며,
+모든 가능한 세팅의 이론적 최소값은 아니다. GitHub main에는 공지의 통합 생성기·소문자 key 수정본이
+아직 확인되지 않아 현재 `estimation` adapter가 표시명 key를 대응시킨다.
 
-- [노브 validation 요약](../outputs/experiments/overdrive_regression/validation/summary.json)
-- [노브 test 요약](../outputs/experiments/overdrive_regression/test/summary.json)
-- [노브 학습 이력](../outputs/experiments/overdrive_regression/model/history.json)
-- [test 청취 예시 인덱스](../outputs/experiments/overdrive_regression/audio_examples/index.json)
-- [두 실험 통합 요약](../outputs/experiments/summary.json)
+전체 렌더링 평가는 `estimation.evaluate --render-samples -1`로 별도 실행할 수 있다.
 
-청취 예시는 test 샘플의 순서상 처음 3개를 사용했으며 오차가 작은 사례를 골라내지 않았다.
-인덱스에는 정답/예측 노브, 데이터 폴더의 Dry/target 위치 및 예측/기본값 렌더 WAV가 있다.
+## 학습 중 d 비교
 
-### 검증 범위와 한계
+학습에서는 기존 Dry/Wet에서 측정한 두 거리 성분을 보조 head의 정답으로 사용했다.
+이는 `d(Dry, target)`의 추정 학습이며, 비미분 VST의 예측 노브 렌더링 d로 직접 역전파하지 않는다.
+보조 d 추정 MAE는 validation 0.22434, test 0.17317이며 실제 출력 d와 다른 지표다.
 
-- 원본 녹음 기준 split을 유지했고, 두 데이터 폴더의 OD 390쌍은 오디오와 정답이 모두 동일하다.
-- 종류·split별 총 9개 사례에서 정답 세팅으로 Wet을 재렌더한 최대 절대 오차는 0.0이었다.
-- 자동 테스트: **90 passed, 111 subtests passed**. 분리 head/loss와 OD 쌍·split 동일성 테스트 포함.
-- 실제 기타 Dry를 사용한 합성 Wet 실험이며 단일 기타·단음 데이터와 seed=42 한 번의 결과다.
-  다른 기타/연주자/실물 페달 및 다른 연주의 reference 일반화는 검증하지 않았다.
-- 모델 선택은 validation loss로만 수행했고 선택된 모델의 test 결과를 위에 기록했다.
-- 패키지 추가 다운로드 없이 기존 Conda 환경에서 수행했다. 원음 읽기 이후 학습·평가는 로컬 데이터만 사용했다.
+이번 실행의 주기적 프로브는 고정 validation 원본 **1개에서 7종 × 첫 2변형 = 14개**를 사용했다.
+전체 validation 대표값으로 보지 않고 학습 경과 확인에만 썼다. 최종 70개 평가는 위에 별도로 기록했다.
+
+| Epoch | CNN 프로브 d | 같은 예측 구조의 기본 노브 d |
+|---|---:|---:|
+| 1 | 0.968790 | 1.008921 |
+| 5 | 0.838547 | 1.014708 |
+| 10 | 0.703671 | 1.077185 |
+| 15 | 0.725558 | 0.990276 |
+| 20 (best loss) | 0.613135 | 0.945666 |
+| 25 | 0.701008 | 0.969010 |
+| 30 | 0.648398 | 0.951230 |
+
+거리·분류 지표가 매 epoch 단조 개선되는 것은 아니다. 현재 코드의 향후 학습 프로브는
+원본을 round-robin으로 분산하며, 이번 실행의 실제 프로브 sample ID는 history에 보존했다.
+
+## 산출물
+
+- [best checkpoint](../outputs/vst7/model/best.pt): epoch 20.
+- [학습 이력](../outputs/vst7/model/history.json), [CSV](../outputs/vst7/model/training_metrics.csv).
+- [validation 요약](../outputs/vst7/validation/summary.json), [test 요약](../outputs/vst7/test/summary.json).
+- [통합 요약](../outputs/vst7/summary.json), [상위 3개 후보 예시](../outputs/vst7/candidates_example.json).
+- [정답 재현 검사](../outputs/vst7/dataset/renderer_preflight.json).
+
+단일 기타·단음 데이터, seed 42 한 번의 결과다. 다른 기타·연주자·실물 페달 및
+서로 다른 연주의 Dry/reference에 대한 일반화는 검증하지 않았다.
+
+## 2026-11-18 후속 CNN → CMA-ES 연결 실험
+
+위 2026-11-17 학습·평가 수치는 그대로 유지했다. 별도 validation 1개에 팀 CMA-ES를
+연결한 결과, 초기 Top-3 최소 d 0.489065에서 0.346037로 감소했다.
+같은 예산의 기본 노브 시작 CMA-ES는 0.373791이었다.
+작은 연결 검증이며, 전체 성능 비교는 아직 실행하지 않았다.
+실험 정의·정답 종류와의 차이·예산·결과 경로는
+[CNN_CMA_EXPERIMENT.md](CNN_CMA_EXPERIMENT.md)에 기록한다.

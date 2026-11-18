@@ -1,166 +1,132 @@
-"""Train the paired CNN from prepared dry/wet segments."""
+"""Train the VST7 paired CNN; retain generated-dry provenance and distance scope."""
 import argparse
-import hashlib
 import json
 import random
+import time
 from pathlib import Path
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 
-from .audio import AudioConfig, log_mel
-from .cnn import PairCNN, masked_loss
-from .chain import catalog, continuous, discrete, fingerprint, normalize
-from .data import load_manifest, pair_audio, write_json
-
-
-class PairDataset(Dataset):
-    def __init__(self, rows, metadata, split, cache_features=False):
-        self.rows = [r for r in rows if r['split'] == split]
-        if not self.rows:
-            raise ValueError(f'Empty split: {split}')
-        self.config = AudioConfig(**metadata['audio_config'])
-        self.definitions = {t: metadata['catalog'][t] for t in metadata.get('effect_types', metadata['catalog'])}
-        self.classes = metadata.get('classes', ['bypass', *self.definitions])
-        self.cache_features = cache_features
-        self.feature_cache = {}
-
-    def features(self, row):
-        if self.cache_features and row['dry_path'] in self.feature_cache and row['wet_path'] in self.feature_cache:
-            return self.feature_cache[row['dry_path']], self.feature_cache[row['wet_path']]
-        dry, wet = pair_audio(row, self.config)
-        result = []
-        for path, audio in ((row['dry_path'], dry), (row['wet_path'], wet)):
-            feature = self.feature_cache.get(path) if self.cache_features else None
-            if feature is None:
-                feature = torch.from_numpy(log_mel(audio, self.config))
-                if self.cache_features:
-                    self.feature_cache[path] = feature
-            result.append(feature)
-        return tuple(result)
-
-    def __len__(self):
-        return len(self.rows)
-
-    def __getitem__(self, index):
-        row = self.rows[index]
-        dry, wet = self.features(row)
-        items = row['ground_truth_chain']['chain']
-        name = items[0]['effect_type'] if items else 'bypass'
-        values = items[0]['values'] if items else {}
-        knobs, targets = {}, {}
-        for t, definition in self.definitions.items():
-            knobs[t] = torch.tensor([normalize(values[p['name']], p) if name == t else 0
-                                     for p in continuous(definition)], dtype=torch.float32)
-            for p in discrete(definition):
-                options = [False, True] if p['type'] == 'boolean' else p['options']
-                targets[f'{t}__{p["name"]}'] = options.index(values[p['name']]) if name == t else 0
-        return dry, wet, self.classes.index(name), knobs, targets
+from .chain import AUXILIARY, DRIVES
+from .cnn import PairCNN, supervised_loss
+from .data import PairDataset, write_json
 
 
-def train(manifest, output, epochs=20, batch_size=16, learning_rate=1e-3,
-          seed=42, device='cpu', class_weight=1.0, knob_weight=1.0,
-          discrete_weight=1.0, num_workers=0, threads=4, cache_features=False):
-    if (epochs < 1 or batch_size < 1 or learning_rate <= 0 or threads < 1 or num_workers < 0
-            or any(not np.isfinite(w) or w < 0 for w in (class_weight, knob_weight, discrete_weight))):
-        raise ValueError('Invalid training configuration')
+def device_batch(batch, device):
+    return {k: device_batch(v,device) if isinstance(v,dict) else v.to(device)
+            for k,v in batch.items()}
+
+
+def run_epoch(model, loader, optimizer=None, distance_weight=.1):
+    training = optimizer is not None
+    model.train(training)
+    stats = {'loss':0., 'classification':0., 'presence':0., 'knobs':0.,
+             'distance_auxiliary':0., 'correct':0, 'presence_correct':0,
+             'knob_abs':0., 'knob_count':0, 'd_abs':0., 'dry_target_d':0.}
+    n = 0
+    for batch in loader:
+        batch = device_batch(batch,next(model.parameters()).device)
+        with torch.set_grad_enabled(training):
+            output = model(batch['dry'],batch['wet'])
+            loss, components = supervised_loss(output,batch,distance_weight)
+            if not torch.isfinite(loss):
+                raise ValueError('Nonfinite training loss')
+            if training:
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(),5.)
+                optimizer.step()
+        count = len(batch['label'])
+        n += count
+        stats['loss'] += float(loss.detach())*count
+        for key,value in components.items():
+            stats[key] += float(value.detach())*count
+        stats['correct'] += int((output['logits'].argmax(1)==batch['label']).sum())
+        stats['presence_correct'] += int(((output['presence']>=0)==batch['presence'].bool()).sum())
+        for t, values in output['knobs'].items():
+            mask = batch['active'][t].bool()
+            stats['knob_abs'] += float((values[mask].detach()-batch['knobs'][t][mask]).abs().sum())
+            stats['knob_count'] += int(values[mask].numel())
+        # Equal normalized weights. Both estimates and targets are dry/reference distances.
+        predicted_d, target_d = output['distance'].mean(1), batch['distance'].mean(1)
+        stats['d_abs'] += float((predicted_d.detach()-target_d).abs().sum())
+        stats['dry_target_d'] += float(target_d.sum())
+    return {**{k:stats[k]/n for k in ('loss','classification','presence','knobs','distance_auxiliary')},
+            'accuracy':stats['correct']/n, 'presence_accuracy':stats['presence_correct']/(2*n),
+            'normalized_knob_mae':stats['knob_abs']/max(1,stats['knob_count']),
+            'dry_target_d_estimate_mae':stats['d_abs']/n,
+            'mean_measured_dry_target_d':stats['dry_target_d']/n}
+
+
+def train(cache, output, epochs=30, batch_size=16, learning_rate=1e-3,
+          seed=42, threads=4, distance_weight=.1, render_every=5):
+    if epochs<1 or batch_size<1 or learning_rate<=0 or distance_weight<0:
+        raise ValueError('Invalid training settings')
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.set_num_threads(threads)
     torch.use_deterministic_algorithms(True)
-    rows, metadata = load_manifest(manifest)
-    if fingerprint(catalog()) != metadata['catalog_hash']:
-        raise ValueError('Renderer catalog changed; regenerate data')
-    task = metadata.get('task', 'joint')
-    model = PairCNN(metadata['catalog'], task=task, effect_types=metadata.get('effect_types'),
-                    include_bypass=metadata.get('include_bypass', True)).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    datasets = {s: PairDataset(rows, metadata, s, cache_features) for s in ('train', 'validation')}
-    loaders = {s: DataLoader(d, batch_size=batch_size, shuffle=s == 'train', num_workers=num_workers,
-                             generator=torch.Generator().manual_seed(seed)) for s, d in datasets.items()}
+    datasets = {s:PairDataset(cache,s) for s in ('train','validation')}
+    metadata = datasets['train'].metadata
+    loaders = {s:DataLoader(d,batch_size=batch_size,shuffle=s=='train',num_workers=0,
+                             generator=torch.Generator().manual_seed(seed)) for s,d in datasets.items()}
+    model = PairCNN(metadata['catalog'])
+    optimizer = torch.optim.Adam(model.parameters(),lr=learning_rate)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,T_max=epochs,eta_min=learning_rate*.05)
     output = Path(output)
-    output.mkdir(parents=True, exist_ok=True)
+    if (output/'history.json').exists():
+        raise FileExistsError('Training results already exist')
+    output.mkdir(parents=True,exist_ok=True)
     history, best = [], float('inf')
-    training_config = dict(epochs=epochs, batch_size=batch_size, learning_rate=learning_rate,
-                           seed=seed, device=device, class_weight=class_weight, knob_weight=knob_weight,
-                           discrete_weight=discrete_weight, num_workers=num_workers, threads=threads,
-                           cache_features=cache_features, task=task)
-    for epoch in range(epochs):
-        record = {'epoch': epoch + 1}
-        for split, loader in loaders.items():
-            model.train(split == 'train')
-            total = correct = count = 0
-            components = {'classification': 0.0, 'knob_huber': 0.0, 'discrete': 0.0}
-            knob_error, knob_count = 0.0, 0
-            with torch.set_grad_enabled(split == 'train'):
-                for dry, wet, labels, knobs, targets in loader:
-                    dry, wet, labels = dry.to(device), wet.to(device), labels.to(device)
-                    knobs = {k: v.to(device) for k, v in knobs.items()}
-                    targets = {k: v.to(device) for k, v in targets.items()}
-                    prediction = model(dry, wet)
-                    loss, stats = masked_loss(prediction, labels, knobs, targets, model.definitions, model.classes,
-                                          class_weight, knob_weight, discrete_weight)
-                    if not torch.isfinite(loss):
-                        raise ValueError('Non-finite training loss')
-                    if split == 'train':
-                        optimizer.zero_grad()
-                        loss.backward()
-                        optimizer.step()
-                    total += float(loss.detach()) * len(labels)
-                    for key, value in stats.items():
-                        components[key] += value * len(labels)
-                    if prediction['logits'] is not None:
-                        correct += int((prediction['logits'].argmax(1) == labels).sum())
-                    for t, values in prediction['continuous'].items():
-                        mask = labels == model.classes.index(t)
-                        active = values[mask].detach()
-                        knob_error += float((active - knobs[t][mask]).abs().sum())
-                        knob_count += active.numel()
-                    count += len(labels)
-            record[split] = {'loss': total / count, 'accuracy': correct / count if task != 'regression' else None,
-                             'classification_loss': components['classification'] / count if task != 'regression' else None,
-                             'knob_huber': components['knob_huber'] / count if task != 'classification' else None,
-                             'normalized_mae': knob_error / knob_count if knob_count else None}
+    config = dict(epochs=epochs,batch_size=batch_size,learning_rate=learning_rate,seed=seed,
+                  threads=threads,distance_weight=distance_weight,render_every=render_every)
+    from .evaluate import render_validation_probe, renderer_status
+    status = renderer_status(cache)
+    from threadpoolctl import threadpool_limits
+    threadpool_limits(limits=1,user_api='blas')
+    write_json(output/'renderer_status.json',status)
+    for epoch in range(1,epochs+1):
+        start = time.perf_counter()
+        record = {'epoch':epoch,'learning_rate':optimizer.param_groups[0]['lr']}
+        for split in ('train','validation'):
+            record[split] = run_epoch(model,loaders[split],optimizer if split=='train' else None,distance_weight)
+        if status['available'] and (epoch==1 or epoch%render_every==0 or epoch==epochs):
+            record['validation_rendered_d'] = render_validation_probe(model,cache,limit=14)
+            record['validation_rendered_d']['evaluated'] = True
+        else:
+            record['validation_rendered_d'] = {'available':status['available'],'evaluated':False,
+                'reason':'not a rendering epoch' if status['available'] else status['reason']}
+        scheduler.step()
+        record['seconds'] = time.perf_counter()-start
         history.append(record)
-        print(json.dumps(record), flush=True)
-        checkpoint = {'format_version': 1, 'state_dict': model.state_dict(),
-                      'optimizer_state_dict': optimizer.state_dict(), 'epoch': epoch + 1,
-                      'model_config': model.model_config, 'classes': model.classes,
-                      'catalog': model.definitions, 'catalog_hash': metadata['catalog_hash'],
-                      'audio_config': metadata['audio_config'], 'renderer': metadata['renderer'],
-                      'data_versions': metadata['versions'],
-                      'parameter_order': {t: [p['name'] for p in continuous(model.definitions[t])]
-                                          for t in model.effect_types if task != 'classification'},
-                      'normalization': 'schema linear or natural-log range -> [0,1]; inverse identical in CMA',
-                      'training_config': training_config, 'validation': record['validation'],
-                      'manifest_sha256': hashlib.sha256(Path(manifest).read_bytes()).hexdigest(),
-                      'torch_version': str(torch.__version__)}
-        torch.save(checkpoint, output / 'last.pt')
-        if record['validation']['loss'] < best:
+        checkpoint = {'format_version':2,'state_dict':model.state_dict(),'epoch':epoch,
+                      'model_config':model.model_config,'catalog':metadata['catalog'],
+                      'catalog_hash':metadata['catalog_hash'],'classes':list(DRIVES),
+                      'audio_config':metadata['audio_config'],'distance_settings':metadata['distance_settings'],
+                      'source_manifest_sha256':metadata['source_manifest_sha256'],
+                      'input_policy':metadata['input_policy'],'training_config':config,
+                      'validation':record['validation'],'torch_version':str(torch.__version__)}
+        torch.save(checkpoint,output/'last.pt')
+        if record['validation']['loss']<best:
             best = record['validation']['loss']
-            torch.save(checkpoint, output / 'best.pt')
-        write_json(output / 'history.json', history)
-    return output / 'best.pt'
+            torch.save(checkpoint,output/'best.pt')
+        write_json(output/'history.json',history)
+        print(json.dumps(record),flush=True)
+    return output/'best.pt'
 
 
 def main():
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--manifest', required=True)
-    p.add_argument('--output', required=True)
-    p.add_argument('--epochs', type=int, default=20)
-    p.add_argument('--batch-size', type=int, default=16)
-    p.add_argument('--learning-rate', type=float, default=1e-3)
-    p.add_argument('--seed', type=int, default=42)
-    p.add_argument('--device', default='cpu')
-    p.add_argument('--class-weight', type=float, default=1)
-    p.add_argument('--knob-weight', type=float, default=1)
-    p.add_argument('--discrete-weight', type=float, default=1)
-    p.add_argument('--num-workers', type=int, default=0)
-    p.add_argument('--threads', type=int, default=4)
-    p.add_argument('--cache-features', action='store_true', help='Cache log-mel features in RAM during this run')
-    print(train(**vars(p.parse_args())))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--cache',required=True)
+    parser.add_argument('--output',required=True)
+    parser.add_argument('--epochs',type=int,default=30)
+    parser.add_argument('--batch-size',type=int,default=16)
+    parser.add_argument('--threads',type=int,default=4)
+    parser.add_argument('--distance-weight',type=float,default=.1)
+    print(train(**vars(parser.parse_args())))
 
 
 if __name__ == '__main__':

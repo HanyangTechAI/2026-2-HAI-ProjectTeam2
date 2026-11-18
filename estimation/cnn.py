@@ -1,84 +1,52 @@
-"""Shared-encoder CNN baseline; not a reproduction of a specific paper."""
+"""Paired CNN: seven VST classes, optional stages, knobs and distance auxiliary task."""
 import torch
 from torch import nn
 from torch.nn import functional as F
 
-from .chain import continuous, discrete
+from .chain import AUXILIARY, DRIVES, continuous
 
 
 class PairCNN(nn.Module):
-    def __init__(self, definitions, channels=(16, 32, 64, 128), hidden=256,
-                 task='joint', effect_types=None, include_bypass=True):
+    def __init__(self, definitions, channels=(8, 16, 32, 64), hidden=256):
         super().__init__()
-        if task not in ('joint', 'classification', 'regression'):
-            raise ValueError('Unknown CNN task')
-        self.task = task
         self.definitions = definitions
-        self.effect_types = list(definitions) if effect_types is None else list(effect_types)
-        if not self.effect_types or len(set(self.effect_types)) != len(self.effect_types) or set(self.effect_types) - set(definitions):
-            raise ValueError('Expected unique supported effect types')
-        if task == 'regression' and (include_bypass or len(self.effect_types) != 1):
-            raise ValueError('Regression requires one known effect without bypass')
-        self.classes = (['bypass'] if include_bypass else []) + self.effect_types
-        self.model_config = {'channels': list(channels), 'hidden': hidden, 'task': task,
-                             'effect_types': self.effect_types, 'include_bypass': include_bypass}
+        self.classes = list(DRIVES)
+        self.model_config = {'channels': list(channels), 'hidden': hidden}
         blocks, previous = [], 1
         for width in channels:
-            blocks.extend([nn.Conv2d(previous, width, 3, padding=1),
-                           nn.GroupNorm(4, width), nn.ReLU(), nn.MaxPool2d(2)])
+            blocks += [nn.Conv2d(previous, width, 3, padding=1), nn.GroupNorm(4, width),
+                       nn.ReLU(), nn.MaxPool2d(2)]
             previous = width
-        self.encoder = nn.Sequential(*blocks, nn.AdaptiveAvgPool2d(1), nn.Flatten())
-        self.fusion = nn.Sequential(nn.Linear(previous * 4, hidden), nn.ReLU())
-        self.classifier = nn.Linear(hidden, len(self.classes)) if task != 'regression' else None
+        # Keep four frequency regions instead of averaging all frequency cues away.
+        self.encoder = nn.Sequential(*blocks, nn.AdaptiveAvgPool2d((4, 1)), nn.Flatten())
+        self.fusion = nn.Sequential(nn.Linear(previous * 16, hidden), nn.ReLU())
+        self.classifier = nn.Linear(hidden, len(DRIVES))
+        self.presence = nn.Linear(hidden, len(AUXILIARY))
         self.knobs = nn.ModuleDict({t: nn.Linear(hidden, len(continuous(d)))
-                                    for t, d in definitions.items()
-                                    if t in self.effect_types and continuous(d) and task != 'classification'})
-        self.discrete_heads = nn.ModuleDict({
-            f'{t}__{p["name"]}': nn.Linear(hidden, 1 if p['type'] == 'boolean' else len(p['options']))
-            for t, d in definitions.items() for p in discrete(d)
-            if t in self.effect_types and task != 'classification'})
+                                    for t, d in definitions.items()})
+        self.distance = nn.Linear(hidden, 2)
 
     def forward(self, dry, reference):
-        zd, zr = self.encoder(dry), self.encoder(reference)
+        zd, zr = self.encoder(torch.cat((dry,reference),dim=0)).chunk(2,dim=0)
         delta = zr - zd
-        h = self.fusion(torch.cat([zd, zr, delta, delta.abs()], dim=1))
-        return {'task': self.task, 'logits': self.classifier(h) if self.classifier is not None else None,
-                'continuous': {t: head(h).sigmoid() for t, head in self.knobs.items()},
-                'discrete': {key: head(h) for key, head in self.discrete_heads.items()}}
+        h = self.fusion(torch.cat((zd, zr, delta, delta.abs()), dim=1))
+        return {'logits': self.classifier(h), 'presence': self.presence(h),
+                'knobs': {t: layer(h).sigmoid() for t, layer in self.knobs.items()},
+                'distance': F.softplus(self.distance(h))}
 
 
-def masked_loss(output, labels, knobs, discrete_targets, definitions, classes,
-                class_weight=1.0, knob_weight=1.0, discrete_weight=1.0):
-    task = output.get('task', 'joint')
-    anchor = output['logits'] if output['logits'] is not None else next(iter(output['continuous'].values()))
-    zero = anchor.sum() * 0
-    classification = F.cross_entropy(output['logits'], labels) if task != 'regression' else zero
-    # Differentiable zero handles a batch consisting entirely of bypass examples.
-    knob_sum = zero
-    discrete_sum = zero
-    knob_count = discrete_count = 0
-    for t, definition in definitions.items():
-        if t not in classes or task == 'classification':
-            continue
-        mask = labels == classes.index(t)
-        count = int(mask.sum())
-        if not count:
-            continue
-        if continuous(definition):
-            pred, target = output['continuous'][t][mask], knobs[t][mask]
-            knob_sum = knob_sum + F.huber_loss(pred, target, reduction='sum')
-            knob_count += target.numel()
-        for p in discrete(definition):
-            key = f'{t}__{p["name"]}'
-            pred, target = output['discrete'][key][mask], discrete_targets[key][mask]
-            if p['type'] == 'boolean':
-                loss = F.binary_cross_entropy_with_logits(pred[:, 0], target.float(), reduction='sum')
-            else:
-                loss = F.cross_entropy(pred, target, reduction='sum')
-            discrete_sum = discrete_sum + loss
-            discrete_count += count
-    knob_loss = knob_sum / max(1, knob_count)
-    discrete_loss = discrete_sum / max(1, discrete_count)
-    total = class_weight * classification + knob_weight * knob_loss + discrete_weight * discrete_loss
-    return total, {'classification': float(classification.detach()),
-                   'knob_huber': float(knob_loss.detach()), 'discrete': float(discrete_loss.detach())}
+def supervised_loss(output, batch, distance_weight=0.1):
+    classification = F.cross_entropy(output['logits'], batch['label'])
+    presence = F.binary_cross_entropy_with_logits(output['presence'], batch['presence'])
+    total, count = classification * 0, 0
+    for t, prediction in output['knobs'].items():
+        mask = batch['active'][t].bool()
+        if mask.any():
+            total = total + F.huber_loss(prediction[mask], batch['knobs'][t][mask], reduction='sum')
+            count += prediction[mask].numel()
+    knobs = total / max(1, count)
+    # This is d(generated dry, target wet), NOT d(rendered predicted knobs, target).
+    distance = F.huber_loss(output['distance'], batch['distance'])
+    loss = classification + presence + knobs + distance_weight * distance
+    return loss, {'classification': classification, 'presence': presence,
+                  'knobs': knobs, 'distance_auxiliary': distance}

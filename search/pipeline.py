@@ -40,10 +40,11 @@ class ChainParameterSpec:
     주어진 체인 구조(예: ["compressor", "overdrive"])에 대해
     schemas/effects.data.json을 읽어 연속형 노브들의 탐색 범위와 스케일(linear/log)을 동적으로 구성합니다.
     """
-    def __init__(self, effect_types, effects_def=None, amp_id="fixed_amp_v1"):
+    def __init__(self, effect_types, effects_def=None, amp_id="fixed_amp_v1", round_digits=4):
         self.effects_def = effects_def or load_effects()
         self.effect_types = list(effect_types)
         self.amp_id = amp_id
+        self.round_digits = round_digits
 
         self.param_meta = []  # (effect_idx, effect_type, param_name, low, high, is_log)
         self.fixed_values = [{} for _ in self.effect_types]
@@ -113,7 +114,9 @@ class ChainParameterSpec:
             for idx, etype in enumerate(self.effect_types)
         ]
         for val, (idx, _, pname, _, _, _) in zip(real_params, self.param_meta):
-            chain_list[idx]["values"][pname] = round(float(val), 4)
+            chain_list[idx]["values"][pname] = (
+                float(val) if self.round_digits is None else round(float(val), self.round_digits)
+            )
         return {"amp_id": self.amp_id, "chain": chain_list}
 
     def chain_to_vector(self, chain_data):
@@ -167,7 +170,7 @@ def filter_candidates_by_inventory(candidate_chains, owned_effect_types):
 # [3] 평가 추적기 및 탐색 알고리즘 (Restart CMA-ES & Random Search)
 # ----------------------------------------------------------------------
 class Tracker:
-    def __init__(self, objective_fn, spec: ChainParameterSpec, budget: int):
+    def __init__(self, objective_fn, spec: ChainParameterSpec, budget: int, strict=False):
         self.objective_fn = objective_fn
         self.spec = spec
         self.budget = budget
@@ -175,6 +178,7 @@ class Tracker:
         self.best_loss = float("inf")
         self.best_norm = np.full(spec.dim, 0.5, dtype=float)
         self.history = []
+        self.strict = strict
 
     @property
     def exhausted(self):
@@ -189,8 +193,12 @@ class Tracker:
             chain_dict = self.spec.vector_to_chain(real_params)
             loss = float(self.objective_fn(chain_dict))
             if not np.isfinite(loss):
+                if self.strict:
+                    raise ValueError("Objective returned a non-finite distance")
                 loss = PENALTY
         except Exception as e:
+            if self.strict:
+                raise
             print(f"[WARN] 렌더링/평가 실패 -> penalty: {e}")
             loss = PENALTY
 
@@ -224,10 +232,24 @@ def run_random_search_for_chain(objective_fn, spec: ChainParameterSpec, budget=2
 
 
 def run_cma_es_for_chain(objective_fn, spec: ChainParameterSpec, budget=200, seed=0,
-                         n_runs=4, sigma0=0.25, popsize=None, initial_values=None):
+                         n_runs=4, sigma0=0.25, popsize=None, initial_values=None,
+                         evaluate_initial=False, strict=False):
     """단일 후보 체인에 대해 Restart CMA-ES(예: 50회 x 4번)를 실행합니다."""
     rng = np.random.default_rng(seed)
-    tr = Tracker(objective_fn, spec, budget)
+    if budget < 1 or n_runs < 1:
+        raise ValueError("budget and n_runs must be positive")
+    tr = Tracker(objective_fn, spec, budget, strict=strict)
+    if initial_values is not None:
+        initial_values = np.asarray(initial_values, dtype=float)
+        if initial_values.shape != (spec.dim,) or not np.isfinite(initial_values).all():
+            raise ValueError("Initial values must match the parameter specification")
+        if np.any(initial_values < spec.lows) or np.any(initial_values > spec.highs):
+            raise ValueError("Initial values are outside parameter bounds")
+    if evaluate_initial:
+        initial_norm = spec.normalize(initial_values) if initial_values is not None else np.full(spec.dim, 0.5)
+        tr(initial_norm)
+        if tr.exhausted:
+            return tr.best_result()
 
     if spec.dim == 0:
         tr(np.array([]))
@@ -241,8 +263,9 @@ def run_cma_es_for_chain(objective_fn, spec: ChainParameterSpec, budget=200, see
         return tr.best_result()
 
     pop = popsize or max(6, 4 + int(3 * np.log(spec.dim)))
-    base_evals = budget // n_runs
-    rem = budget % n_runs
+    remaining_budget = budget - tr.n
+    base_evals = remaining_budget // n_runs
+    rem = remaining_budget % n_runs
     run_budgets = [base_evals + (1 if i < rem else 0) for i in range(n_runs)]
 
     for run_idx, sub_budget in enumerate(run_budgets):
@@ -298,12 +321,24 @@ def search_and_rank_chains(
     n_seeds=1,
     metric_fn=spectral_distance,
     initial_guesses=None,
+    *,
+    render_fn=None,
+    evaluate_initial=False,
+    parameter_round_digits=4,
+    strict=False,
+    base_seed=0,
 ):
     """
     1) owned_effect_types(user_inventory)로 후보 체인을 필터링합니다.
     2) 각 후보 체인별로 CMA-ES를 실행해 최적 노브 값과 최소 Loss를 구합니다.
        (지도학습 모델이 예측한 initial_guesses가 있으면 첫 시드 시작점으로 활용)
     3) Loss 오름차순(유사도 높은 순)으로 정렬하여 결과를 반환합니다.
+
+    CNN bridge options are opt-in: render_fn(audio, sr, chain) injects the
+    canonical VST adapter; evaluate_initial counts/preserves each seed;
+    parameter_round_digits=None preserves exact CNN knobs; strict propagates
+    plugin/metric failures rather than replacing them with penalty scores.
+    budget is per candidate per seed, not a global multi-candidate render cap.
     """
     effects_def = effects_def or load_effects()
     initial_guesses = initial_guesses or {}
@@ -315,13 +350,14 @@ def search_and_rank_chains(
         dropped = []
 
     def objective_fn(chain_dict):
-        wet = render_chain(dry_audio, sr, chain_dict, effects=effects_def)
+        wet = (render_chain(dry_audio, sr, chain_dict, effects=effects_def)
+               if render_fn is None else render_fn(dry_audio, sr, chain_dict))
         return metric_fn(wet, target_audio)
 
     ranked_results = []
     for etypes in valid_candidates:
         etypes_tuple = tuple(etypes)
-        spec = ChainParameterSpec(etypes, effects_def=effects_def)
+        spec = ChainParameterSpec(etypes, effects_def=effects_def, round_digits=parameter_round_digits)
 
         init_vec = None
         if etypes_tuple in initial_guesses:
@@ -329,6 +365,8 @@ def search_and_rank_chains(
                 init_vec = spec.chain_to_vector(initial_guesses[etypes_tuple])
                 print(f"[INFO] 후보 {etypes}에 대해 지도학습 초기 추정값(Warm-start)을 적용합니다.")
             except Exception as e:
+                if strict:
+                    raise
                 print(f"[WARN] 초기값 변환 실패 ({etypes}): {e}")
 
         best_overall = None
@@ -339,9 +377,11 @@ def search_and_rank_chains(
                 objective_fn,
                 spec,
                 budget=budget,
-                seed=seed,
+                seed=base_seed + seed,
                 n_runs=n_restarts,
                 initial_values=init_vec if seed == 0 else None,
+                evaluate_initial=evaluate_initial,
+                strict=strict,
             )
             seed_losses.append(best_loss)
             if best_overall is None or best_loss < best_overall["loss"]:

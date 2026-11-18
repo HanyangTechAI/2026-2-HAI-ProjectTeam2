@@ -1,127 +1,112 @@
-"""Drive definitions, knob coordinates and chain candidates for the CNN pipeline."""
+"""Canonical VST vocabulary and the candidate contract shared with search."""
 import copy
 import hashlib
 import json
+from pathlib import Path
 
 import numpy as np
 
-from effects.render import load_effects, render_chain
+DRIVES = ('808_scream', 'b_drive', 'o_drive', 'one_distortion',
+          'bat_distortion', 'f_fuzz', 'm_fuzz')
+AUXILIARY = ('compressor', 'eq_3band')
+MODEL_NAMES = dict(zip(DRIVES, ('808-Scream', 'B-Drive', 'O-Drive',
+                              'One-Distortion', 'BAT-Distortion', 'F-Fuzz', 'M-Fuzz')))
+
+
+def fingerprint(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
 def catalog():
-    """Only rendered gain-stage knobs are learnable; retain ignored defaults."""
+    """Read team definitions without importing or loading any VST plugin.
+
+    Older checkouts use display-name keys. Expose only the seven canonical
+    dataset keys and the two optional stages. input_gain_db was not sampled
+    in this dataset: keep it fixed at zero rather than inventing a label.
+    """
+    path = Path(__file__).resolve().parents[1] / 'schemas/effects.data.json'
+    raw = json.loads(path.read_text(encoding='utf-8'))
     result = {}
-    for name, definition in load_effects().items():
-        if definition['category'] != 'gain_stage' or definition['source'] != 'pedalboard':
-            continue
-        classes = definition.get('composite_of') or [definition['class_name']]
-        params = [p for p in definition['params']
-                  if p['maps_to'].partition('.')[0] in classes and '.' in p['maps_to']]
-        result[name] = dict(definition, active_params=params)
+    for name in (*DRIVES, *AUXILIARY):
+        source = name if name in raw else MODEL_NAMES.get(name, name)
+        if source not in raw:
+            raise ValueError(f'Missing effect definition: {name}')
+        definition = copy.deepcopy(raw[source])
+        definition['params'] = [p for p in definition['params'] if p['name'] != 'input_gain_db']
+        definition['active_params'] = definition['params']
+        if name in DRIVES:
+            if definition['source'] != 'vst':
+                raise ValueError(f'{name} must be a VST definition')
+            definition['render_fixed'] = {'input_gain_db': 0.0}
+        result[name] = definition
     return result
 
 
-def fingerprint(definitions):
-    return hashlib.sha256(json.dumps(definitions, sort_keys=True).encode()).hexdigest()
-
-
 def continuous(definition):
-    return [p for p in definition['active_params'] if p['type'] == 'continuous']
-
-
-def discrete(definition):
-    return [p for p in definition['active_params'] if p['type'] in ('categorical', 'boolean')]
+    return [p for p in definition['params'] if p['type'] == 'continuous']
 
 
 def normalize(value, param):
-    lo, hi = param['range']
-    if not np.isfinite(value) or not lo <= value <= hi:
-        raise ValueError(f"Invalid {param['name']}: {value}, expected [{lo}, {hi}]")
-    if param.get('scale') == 'log':
-        return float((np.log(value) - np.log(lo)) / (np.log(hi) - np.log(lo)))
-    return float((value - lo) / (hi - lo))
+    low, high = param['range']
+    if not np.isfinite(value) or not low <= value <= high:
+        raise ValueError(f"{param['name']}={value} outside [{low}, {high}]")
+    return float(np.log(value / low) / np.log(high / low) if param.get('scale') == 'log'
+                 else (value - low) / (high - low))
 
 
 def denormalize(value, param):
     if not np.isfinite(value):
-        raise ValueError('Non-finite parameter coordinate')
+        raise ValueError('Nonfinite knob coordinate')
+    low, high = param['range']
     value = float(np.clip(value, 0, 1))
-    lo, hi = param['range']
-    if param.get('scale') == 'log':
-        return float(np.exp(np.log(lo) + value * (np.log(hi) - np.log(lo))))
-    return float(lo + value * (hi - lo))
+    return float(low * (high / low) ** value if param.get('scale') == 'log'
+                 else low + (high - low) * value)
 
 
-def chain_instance(effect_type, values=None, definitions=None):
-    definitions = definitions if definitions is not None else catalog()
-    items = []
-    if effect_type != 'bypass':
-        definition = definitions[effect_type]
-        defaults = {p['name']: p['default'] for p in definition['params']}
-        if set(values or {}) - set(defaults):
-            raise ValueError('Unknown knob name')
-        defaults.update(values or {})
-        active_names = {p['name'] for p in definition['active_params']}
-        for p in definition['params']:
-            if p['name'] not in active_names:
-                defaults[p['name']] = p['default']
-        for p in continuous(definition):
-            normalize(defaults[p['name']], p)
-        for p in discrete(definition):
-            options = [False, True] if p['type'] == 'boolean' else p['options']
-            if defaults[p['name']] not in options:
-                raise ValueError('Invalid discrete knob value')
-        items = [{'effect_type': effect_type, 'values': defaults}]
-    # Required schema identifier; renderer explicitly ignores amp_id.
-    return {'amp_id': 'fixed_amp_v1', 'chain': items}
+def make_candidates(prediction, owned_effect_types=None, k=3, definitions=None):
+    """One full Compressor -> VST -> EQ chain per permitted drive.
 
-
-def candidate(effect_type, score, values=None, definitions=None):
-    definitions = definitions if definitions is not None else catalog()
-    chain = chain_instance(effect_type, values, definitions)
-    specs = [] if effect_type == 'bypass' else continuous(definitions[effect_type])
-    knobs = {} if not chain['chain'] else chain['chain'][0]['values']
-    return {'effect_type': effect_type, 'model_score': float(score), 'chain': chain,
-            'x0': [normalize(knobs[p['name']], p) for p in specs],
-            'vector_spec': [dict(p, transform=p.get('scale', 'linear'),
-                                 normalized_bounds=[0.0, 1.0]) for p in specs]}
+    model_score is a drive softmax probability, NOT an audio-distance score.
+    vector_spec includes effect_index so CMA-ES can update every active stage.
+    """
+    definitions = definitions or catalog()
+    if k < 1:
+        raise ValueError('k must be positive')
+    probabilities = prediction['probabilities']
+    if (set(probabilities) != set(DRIVES) or
+            any(not np.isfinite(v) or not 0 <= v <= 1 for v in probabilities.values()) or
+            not np.isclose(sum(probabilities.values()), 1, atol=1e-5)):
+        raise ValueError('Expected seven finite probabilities summing to one')
+    allowed = set(DRIVES if owned_effect_types is None else owned_effect_types) & set(DRIVES)
+    ranked = sorted(allowed, key=lambda t: (-probabilities[t], t))[:k]
+    candidates = []
+    for drive in ranked:
+        names = ([AUXILIARY[0]] if prediction['presence'][AUXILIARY[0]] >= 0.5 else [])
+        names += [drive]
+        if prediction['presence'][AUXILIARY[1]] >= 0.5:
+            names.append(AUXILIARY[1])
+        items, specs, vector = [], [], []
+        for name in names:
+            values = prediction['values'][name]
+            params = continuous(definitions[name])
+            if set(values) != {p['name'] for p in params}:
+                raise ValueError(f'Incomplete knobs for {name}')
+            for p in params:
+                vector.append(normalize(values[p['name']], p))
+                specs.append(dict(p, effect_type=name, effect_index=len(items),
+                                  normalized_bounds=[0.0, 1.0]))
+            items.append({'effect_type': name, 'values': dict(values)})
+        candidates.append({'effect_type': drive, 'model_score': float(probabilities[drive]),
+                           'chain': {'amp_id': 'fixed_amp_v1', 'chain': items},
+                           'x0': vector, 'vector_spec': specs})
+    return candidates
 
 
 def with_vector(item, vector):
-    if len(vector) != len(item['vector_spec']):
-        raise ValueError('Parameter vector length mismatch')
-    if not np.isfinite(vector).all():
-        raise ValueError('Non-finite parameter vector')
-    vector = np.clip(vector, 0, 1)
+    if len(vector) != len(item['vector_spec']) or not np.isfinite(vector).all():
+        raise ValueError('Invalid CMA-ES vector')
     result = copy.deepcopy(item)
-    result['x0'] = [float(v) for v in vector]
-    for p, value in zip(result['vector_spec'], vector):
-        result['chain']['chain'][0]['values'][p['name']] = denormalize(value, p)
+    result['x0'] = [float(v) for v in np.clip(vector, 0, 1)]
+    for p, v in zip(result['vector_spec'], result['x0']):
+        result['chain']['chain'][p['effect_index']]['values'][p['name']] = denormalize(v, p)
     return result
-
-
-def make_candidates(prediction, owned_effect_types, k=3, definitions=None):
-    """One candidate per class. Discrete knobs use argmax, no enumeration."""
-    if k < 1:
-        raise ValueError('k must be positive')
-    definitions = definitions if definitions is not None else catalog()
-    expected = {'bypass', *definitions}
-    probabilities = prediction['probabilities']
-    if (set(probabilities) != expected or
-            any(not np.isfinite(p) or not 0 <= p <= 1 for p in probabilities.values()) or
-            not np.isclose(sum(probabilities.values()), 1, atol=1e-5)):
-        raise ValueError('Expected finite class probabilities summing to one')
-    if set(prediction['values']) != set(definitions):
-        raise ValueError('Expected knob predictions for every supported drive')
-    allowed = {'bypass'} | (set(owned_effect_types) & set(definitions))
-    ranked = sorted(allowed, key=lambda t: (-prediction['probabilities'][t], t))[:k]
-    return [candidate(t, prediction['probabilities'][t], prediction['values'].get(t), definitions)
-            for t in ranked]
-
-
-def checked_render(dry, sample_rate, chain):
-    """render_chain constructs a fresh Pedalboard on every call (reset=True)."""
-    wet = np.asarray(render_chain(dry, sample_rate, chain), dtype=np.float32)
-    if wet.shape != dry.shape or not np.all(np.isfinite(wet)):
-        raise ValueError('Renderer returned invalid or unaligned audio')
-    return wet

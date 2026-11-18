@@ -1,5 +1,9 @@
 # Search Pipeline (탐색 엔진 베이스라인)
 
+VST7 CNN 후보 연결 실험은 [estimation/CNN_CMA_EXPERIMENT.md](../estimation/CNN_CMA_EXPERIMENT.md)를 참고한다.
+`estimation.cma_experiment`가 이 폴더의 `search_and_rank_chains`와 Restart CMA-ES를 호출하며,
+기존 아래 Overdrive 베이스라인 명령과 별도로 실행한다.
+
 Overdrive 이펙터(Compressor 바이패스)의 파라미터(`drive`, `level`) 역추정을 위한 Gradient-free 탐색 파이프라인입니다.
 
 ## 주요 기능

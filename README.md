@@ -47,9 +47,9 @@ python schemas/validate.py
 검증 스크립트는 이펙터 정의가 JSON Schema를 만족하는지 확인합니다.
 현재 스키마 기반 드라이브 렌더러, Step 0 탐색 실험과 CNN 초기 추정 파이프라인을 제공합니다.
 
-초기 체인 순서는 컴프 → 드라이브류(overdrive/distortion/fuzz 중 하나) → 고정 앰프 → EQ입니다.
-현재 CNN 버전은 드라이브 최대 한 개와 bypass만 출력하며 앰프, 컴프레서, EQ는 적용하지 않습니다.
-종류 분류와 노브 예측을 분리한 CNN 실험은
+현재 CNN은 생성 폴더의 peak −12 dBFS `dry/`를 입력으로 VST 7종 중 하나와
+선택적 컴프·EQ의 사용 여부·노브 초기값을 함께 예측합니다. 앰프는 렌더링하지 않습니다.
+스펙트럼·다이내믹스 복합 거리 `d`로 실제 렌더링 결과를 비교하는 CNN 실험은
 [estimation/EXPERIMENTS.md](estimation/EXPERIMENTS.md)를 참고하세요.
 
 ## 개발 단계
