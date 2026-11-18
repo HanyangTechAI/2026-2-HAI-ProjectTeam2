@@ -1,3 +1,5 @@
+# [안내] Step 1 데이터 생성은 scripts/generate_step1_dataset.py로 통일했습니다 (STEP1_DATA_GENERATION.md).
+#        이 스크립트는 기존 결과 재현용으로만 남겨 둡니다.
 import os
 import json
 import random
@@ -64,33 +66,33 @@ def get_random_drive(drive_type):
             "level": round(random.uniform(-2.0, 2.0), 2)
         }
     elif drive_type in [
-        "808-Scream", "9-Scream", "B-Drive", "O-Drive", "S-Drive", 
-        "One-Distortion", "BAT-Distortion", "XXL-Distortion", 
-        "M-Distortion", "F-Fuzz", "M-Fuzz", "T-Boost"
+        "808_scream", "9-Scream", "b_drive", "o_drive", "S-Drive", 
+        "one_distortion", "bat_distortion", "XXL-Distortion", 
+        "M-Distortion", "f_fuzz", "m_fuzz", "T-Boost"
     ]:
-        params = {"input_gain_db": DEFAULT_INPUT_GAIN_DB}
+        params = {}  # input_gain_db는 스키마 fixed_params에서 0 dB로 고정
         
-        if drive_type == "808-Scream":
+        if drive_type == "808_scream":
             params.update({"level": round(random.uniform(45.0, 55.0), 2), "overdrive": round(random.uniform(30.0, 100.0), 2), "tone": round(random.uniform(0.0, 100.0), 2)})
         elif drive_type == "9-Scream":
             params.update({"level": round(random.uniform(45.0, 55.0), 2), "drive": round(random.uniform(30.0, 100.0), 2), "tone": round(random.uniform(0.0, 100.0), 2)})
-        elif drive_type == "B-Drive":
+        elif drive_type == "b_drive":
             params.update({"level": round(random.uniform(45.0, 55.0), 2), "gain": round(random.uniform(30.0, 100.0), 2), "tone": round(random.uniform(0.0, 100.0), 2)})
-        elif drive_type == "O-Drive":
+        elif drive_type == "o_drive":
             params.update({"level": round(random.uniform(45.0, 55.0), 2), "overdrive": round(random.uniform(30.0, 100.0), 2)})
         elif drive_type == "S-Drive":
             params.update({"level": round(random.uniform(45.0, 55.0), 2), "overdrive": round(random.uniform(30.0, 100.0), 2), "tone": round(random.uniform(0.0, 100.0), 2)})
-        elif drive_type == "One-Distortion":
+        elif drive_type == "one_distortion":
             params.update({"level": round(random.uniform(45.0, 55.0), 2), "distortion": round(random.uniform(30.0, 100.0), 2), "tone": round(random.uniform(0.0, 100.0), 2)})
-        elif drive_type == "BAT-Distortion":
+        elif drive_type == "bat_distortion":
             params.update({"volume": round(random.uniform(45.0, 55.0), 2), "distortion": round(random.uniform(30.0, 100.0), 2), "filter": round(random.uniform(0.0, 100.0), 2)})
         elif drive_type == "XXL-Distortion":
             params.update({"output": round(random.uniform(45.0, 55.0), 2), "distortion": round(random.uniform(30.0, 100.0), 2)})
         elif drive_type == "M-Distortion":
             params.update({"level": round(random.uniform(45.0, 55.0), 2), "distortion": round(random.uniform(30.0, 100.0), 2), "high": round(random.uniform(0.0, 100.0), 2), "low": round(random.uniform(0.0, 100.0), 2), "mid": round(random.uniform(0.0, 100.0), 2), "mid_frequency": round(random.uniform(0.0, 100.0), 2)})
-        elif drive_type == "F-Fuzz":
+        elif drive_type == "f_fuzz":
             params.update({"volume": round(random.uniform(45.0, 55.0), 2), "fuzz": round(random.uniform(30.0, 100.0), 2)})
-        elif drive_type == "M-Fuzz":
+        elif drive_type == "m_fuzz":
             params.update({"volume": round(random.uniform(45.0, 55.0), 2), "sustain": round(random.uniform(30.0, 100.0), 2), "tone": round(random.uniform(0.0, 100.0), 2)})
         elif drive_type == "T-Boost":
             pass
@@ -117,9 +119,9 @@ def generate_dataset():
     drive_types = [
        # "overdrive", "distortion", "fuzz",   페달보드 기본 함수로 만든 애들 
        # 비활성화 상태: "T-Boost", "9-Scream", "S-Drive", "M-Distortion", "XXL-Distortion",
-        "808-Scream", "B-Drive", "O-Drive",
-        "One-Distortion", "BAT-Distortion",
-        "F-Fuzz", "M-Fuzz"
+        "808_scream", "b_drive", "o_drive",
+        "one_distortion", "bat_distortion",
+        "f_fuzz", "m_fuzz"
     ]
     ######################################################################################
     total_generated = 0
@@ -166,8 +168,8 @@ def generate_dataset():
                         break
                     elif max_diff <= 1e-4:
                         print(f"[경고] 바이패스 감지됨 ({filename} - {d_type}). 플러그인 캐시 초기화 후 재시도합니다.")
-                        from effects.render import _VST_CACHE
-                        _VST_CACHE.clear()
+                        from effects.render import _load_vst
+                        _load_vst.cache_clear()
 
                 wet_filename = f"wet_{base_name}_{d_type}_{variation_counter:03d}.wav"
                 label_filename = f"params_{base_name}_{d_type}_{variation_counter:03d}.json"

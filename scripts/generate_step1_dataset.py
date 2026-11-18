@@ -29,8 +29,10 @@ from schemas.validate import load_schemas, validate_chain, validate_effects
 
 
 ROOT = Path(__file__).resolve().parents[1]
-ALGORITHM = "step1-schema-random-v1"
-DEFAULT_EFFECTS = ("compressor", "overdrive", "distortion", "fuzz", "eq_3band")
+ALGORITHM = "step1-schema-random-v2"
+# Step 1 드라이브: MultiDrive PRO 7종 (pedalboard overdrive/distortion/fuzz는 대체용으로 --effects로 선택 가능)
+DRIVES = ("808_scream", "b_drive", "o_drive", "one_distortion", "bat_distortion", "f_fuzz", "m_fuzz")
+DEFAULT_EFFECTS = ("compressor", *DRIVES, "eq_3band")
 SOURCE_DATASET = "IDMT-SMT-Guitar V2"
 
 
@@ -52,18 +54,20 @@ class Stage:
 
 DEFAULT_POLICY = (
     Stage(("compressor",), 0.5),
-    Stage(("overdrive", "distortion", "fuzz")),
+    Stage(DRIVES),
     Stage(("eq_3band",), 0.5),
 )
 
 
 @dataclass(frozen=True)
 class Config:
-    variations: int = 1  # total variants per dry source, not per drive
+    variations: int = 1  # variants per dry source; with per_drive, per dry source AND per drive
     seed: int = 42
     effects: tuple = DEFAULT_EFFECTS
     policy: tuple = DEFAULT_POLICY
     source_dataset: str = SOURCE_DATASET
+    per_drive: bool = False  # True: every enabled drive gets `variations` chains per dry source
+    dry_peak_db: float = None  # set: scale each dry to this peak (dBFS) before rendering; wet is untouched
 
 
 def sample_parameter(param, rng):
@@ -101,13 +105,17 @@ class Generator:
         self.warnings = [
             "Temporary experiment policy; team has not finalized chain order/probabilities.",
             "amp_id is metadata only; the team renderer does not process an amp yet.",
-            "No loudness rejection, normalization or clipping correction is performed.",
+            "No loudness rejection or clipping correction is performed on wet audio.",
         ]
+        if config.dry_peak_db is None:
+            self.warnings.append("Dry audio is rendered at its original level (no --dry-peak-db).")
         for name in config.effects:
             definition = self.effects[name]
             defaults = {p["name"]: p["default"] for p in definition["params"]}
             # Use the team's own builder to reject unsupported sources/classes/knobs.
-            build_effect(name, defaults, self.effects)
+            # VST plugins are only loaded when rendering, so previews work without the plugin.
+            if definition["source"] != "vst":
+                build_effect(name, defaults, self.effects)
             for param in definition["params"]:
                 if not _mapped(definition, param):
                     self.warnings.append(
@@ -117,10 +125,16 @@ class Generator:
             "effects": list(config.effects), "source_dataset": config.source_dataset,
             "policy": [{"effect_types": list(s.effect_types), "probability": s.probability}
                        for s in config.policy],
+            "per_drive": config.per_drive, "dry_peak_db": config.dry_peak_db,
             "amp_id": self.amp["amp_id"],
             "effects_digest": _digest({name: self.effects[name] for name in config.effects}),
         }
         self.run_id = _digest(self.settings)
+
+    def drives(self):
+        """Enabled gain-stage (drive) effects, in policy order."""
+        return [name for stage in self.config.policy for name in stage.effect_types
+                if name in self.config.effects and self.effects[name]["category"] == "gain_stage"]
 
     def _validate_config(self):
         c = self.config
@@ -152,16 +166,32 @@ class Generator:
             raise ValueError("every enabled effect must belong to a policy stage")
         if not guaranteed:
             raise ValueError("policy must guarantee at least one enabled effect")
+        if not isinstance(c.per_drive, bool):
+            raise ValueError("per_drive must be a boolean")
+        if c.per_drive:
+            drive_stages = [s for s in c.policy if any(
+                name in c.effects and self.effects[name]["category"] == "gain_stage" for name in s.effect_types)]
+            if len(drive_stages) != 1 or drive_stages[0].probability != 1:
+                raise ValueError("per_drive needs exactly one always-on stage with the enabled drives")
+        if c.dry_peak_db is not None and (isinstance(c.dry_peak_db, bool)
+                                          or not isinstance(c.dry_peak_db, (int, float))
+                                          or not math.isfinite(c.dry_peak_db) or c.dry_peak_db > 0):
+            raise ValueError("dry_peak_db must be a finite number <= 0 (dBFS)")
 
-    def chain(self, dry_id, variation):
+    def chain(self, dry_id, variation, drive=None):
+        """Random chain for one variant. drive (per_drive mode) fixes the drive stage's choice."""
         # Per-source/per-variant RNG avoids changes caused by input order or count.
-        rng = random.Random(_digest([self.config.seed, dry_id, variation]))
+        key = [self.config.seed, dry_id, variation] + ([drive] if drive is not None else [])
+        rng = random.Random(_digest(key))
         chain = []
         for stage in self.config.policy:
             choices = [name for name in stage.effect_types if name in self.config.effects]
-            if not choices or rng.random() >= stage.probability:
+            if drive is not None and drive in choices:
+                name = drive
+            elif not choices or rng.random() >= stage.probability:
                 continue
-            name = rng.choice(choices)
+            else:
+                name = rng.choice(choices)
             definition = self.effects[name]
             values = {p["name"]: (sample_parameter(p, rng) if _mapped(definition, p)
                                   else p["default"]) for p in definition["params"]}
@@ -177,6 +207,12 @@ class DrySource:
     dry_id: str
     namespace: str
     relative_path: str
+
+    @property
+    def name(self):
+        """Readable dry name for file names: {namespace}_{relative path without extension}."""
+        stem = self.relative_path.rsplit(".", 1)[0]
+        return re.sub(r"[^A-Za-z0-9_-]", "-", f"{self.namespace}_{stem}")
 
 
 def discover_sources(inputs):
@@ -212,6 +248,9 @@ def discover_sources(inputs):
             count += 1
         if not count:
             raise ValueError(f"no WAV files in input: {root}")
+    names = [source.name for source in sources]
+    if len({name.casefold() for name in names}) != len(names):
+        raise ValueError("two dry files map to the same output name; rename one of them")
     return sorted(sources, key=lambda source: source.dry_id)
 
 
@@ -264,16 +303,28 @@ class Plan:
         if self.output and any(self.output.is_relative_to(Path(directory)) for _, directory in self.inputs):
             raise ValueError("output must be outside every input directory")
 
+    def _jobs(self):
+        g = self.generator
+        drives = g.drives() if g.config.per_drive else [None]
+        for drive in drives:
+            for index in range(g.config.variations):
+                yield drive, index
+
     def items(self):
         g = self.generator
         for source in self.sources:
-            for index in range(g.config.variations):
-                target_id = f"wet_{source.dry_id[4:]}_{g.run_id}_{index + 1:06d}"
+            for drive, index in self._jobs():
+                chain = g.chain(source.dry_id, index, drive)
+                drive_name = drive or next((x["effect_type"] for x in chain["chain"]
+                                            if self.generator.effects[x["effect_type"]]["category"] == "gain_stage"),
+                                           "nodrive")
+                # wet_{dry}_{schema_key}_{번호}.wav  (번호: 같은 dry 안에서 1부터)
+                target_id = f"wet_{source.name}_{drive_name}_{index + 1:03d}"
                 audio_relative = f"audio/{target_id}.wav"
                 label = {
                     "target_id": target_id, "is_synthetic": True,
                     "dry_sample_id": source.dry_id,
-                    "ground_truth_chain": g.chain(source.dry_id, index),
+                    "ground_truth_chain": chain,
                     "source_dataset": g.config.source_dataset,
                     "file_path": ((self.output / audio_relative).as_posix() if self.output
                                   else f"<OUTPUT>/{audio_relative}"),
@@ -287,12 +338,16 @@ class Plan:
             examples.append(label)
             if len(examples) >= preview_count:
                 break
-        pairs = len(self.sources) * self.generator.config.variations
+        pairs = len(self.sources) * sum(1 for _ in self._jobs())
         return {
-            **self.generator.settings, "variations_per_source": self.generator.config.variations,
+            **self.generator.settings, "run_id": self.generator.run_id,
+            "variations_per_source": self.generator.config.variations,
+            "drives": self.generator.drives(),
             "dry_sources": len(self.sources), "pairs": pairs,
             "wav_files": pairs, "label_files": pairs, "manifest_files": 1,
-            "total_output_files": 2 * pairs + 1,
+            "dry_files": len(self.sources) if self.generator.config.dry_peak_db is not None else 0,
+            "total_output_files": 2 * pairs + 1 + (len(self.sources) if self.generator.config.dry_peak_db
+                                                   is not None else 0),
             "output": str(self.output) if self.output else "<OUTPUT> (not specified)",
             "inputs": self.inputs, "warnings": self.generator.warnings,
             "preview_labels": examples,
@@ -309,6 +364,9 @@ class Plan:
         self.output.mkdir(parents=True, exist_ok=False)
         (self.output / "audio").mkdir()
         (self.output / "labels").mkdir()
+        normalized = self.generator.config.dry_peak_db is not None
+        if normalized:
+            (self.output / "dry").mkdir()
         completed, current_path = 0, None
         for source, label in self.items():
             if source.path != current_path:
@@ -316,6 +374,14 @@ class Plan:
                 if not audio.size or audio.shape[1] not in (1, 2) or not np.isfinite(audio).all():
                     raise ValueError(f"input must be nonempty finite mono/stereo WAV: {source.path}")
                 dry = np.ascontiguousarray(audio.T)  # renderer expects channels x samples
+                peak = float(np.max(np.abs(dry)))
+                if self.generator.config.dry_peak_db is not None and peak > 0:
+                    # Same input level for every dry, so drive amount depends on knobs, not recording level.
+                    dry = (dry * (10 ** (self.generator.config.dry_peak_db / 20) / peak)).astype(np.float32)
+                    # Save the scaled dry: search/training must start from the same audio as the renderer.
+                    _check_plain_path(self.output / "dry")
+                    with (self.output / "dry" / f"{source.name}.wav").open("xb") as stream:
+                        sf.write(stream, dry.T, sr, format="WAV", subtype="FLOAT")
                 current_path = source.path
             chain = label["ground_truth_chain"]
             # Pass a copy; the saved ground truth remains independent of renderer mutation.
@@ -334,7 +400,9 @@ class Plan:
             completed += 1
         manifest = {**self.summary(), "completed_pairs": completed,
                     "dry_id_map": [{"dry_sample_id": s.dry_id, "namespace": s.namespace,
-                                    "relative_path": s.relative_path, "input_path": str(s.path)}
+                                    "relative_path": s.relative_path, "input_path": str(s.path),
+                                    # dry actually fed to the renderer (scaled copy when dry_peak_db is set)
+                                    "render_input": (f"dry/{s.name}.wav" if normalized else str(s.path))}
                                    for s in self.sources]}
         _check_plain_path(self.output)
         with (self.output / "manifest.json").open("x", encoding="utf-8", newline="\n") as stream:
@@ -346,7 +414,12 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-input", nargs=2, action="append", required=True,
                         metavar=("NAME", "DIRECTORY"), help="repeat for multiple guitars; keep NAME stable")
-    parser.add_argument("--variations", type=int, default=1, help="total variants per source (default: 1)")
+    parser.add_argument("--variations", type=int, default=1,
+                        help="variants per source (with --per-drive: per source and per drive; default: 1)")
+    parser.add_argument("--per-drive", action="store_true",
+                        help="make --variations chains for EVERY enabled drive (Step 1: --per-drive --variations 5)")
+    parser.add_argument("--dry-peak-db", type=float, default=None,
+                        help="scale each dry to this peak dBFS before rendering (Step 1: -12); scaled dry is saved")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--effects", nargs="+", default=list(DEFAULT_EFFECTS))
     parser.add_argument("--compressor-probability", type=float, default=0.5)
@@ -363,11 +436,14 @@ def main(argv=None):
             raise ValueError("--chain-order must contain compressor, drive, eq exactly once")
         if args.execute and args.output is None:
             raise ValueError("--execute requires --output")
+        catalog = json.loads((ROOT / "schemas/effects.data.json").read_text(encoding="utf-8"))
+        all_drives = tuple(name for name, d in catalog.items() if d["category"] == "gain_stage")
         stages = {"compressor": Stage(("compressor",), args.compressor_probability),
-                  "drive": Stage(("overdrive", "distortion", "fuzz")),
+                  "drive": Stage(all_drives),
                   "eq": Stage(("eq_3band",), args.eq_probability)}
         config = Config(args.variations, args.seed, tuple(args.effects),
-                        tuple(stages[name] for name in args.chain_order), args.source_dataset)
+                        tuple(stages[name] for name in args.chain_order), args.source_dataset,
+                        args.per_drive, args.dry_peak_db)
         plan = Plan(args.dry_input, config, args.output)
         print(_json({"mode": "execute" if args.execute else "dry-run", **plan.summary()}))
         if args.execute:
