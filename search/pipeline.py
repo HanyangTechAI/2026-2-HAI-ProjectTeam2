@@ -321,6 +321,7 @@ def search_and_rank_chains(
     if candidates is None:
         raise ValueError("candidate_configs 또는 top_k_candidates를 전달해야 합니다.")
 
+    # 1. 인벤토리 필터링
     if owned_effect_types is not None:
         valid_candidates, dropped = filter_candidates_by_inventory(candidates, owned_effect_types)
     else:
