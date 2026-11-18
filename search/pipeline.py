@@ -1,11 +1,16 @@
 """
 search/pipeline.py
 
-Step 1: 스키마 기반 다중 후보 체인 탐색 엔진 (VST 7종 & Estimation 모델 완벽 연동)
-- 학습·탐색 입력을 생성 폴더의 dry/ (manifest.json의 render_input 또는 dry/ 폴더)로 우선 사용
-- 5번(도영님) 모델의 make_candidates / candidate 객체(x0, vector_spec, chain) 완벽 호환
-- VST 이펙터 탐색 실행 및 후보별/전체 연산 소요 시간 측정
-- 사용자 보유 이펙터(user_inventory) 필터링 및 Loss 오름차순(유사도순) 정렬
+Step 1: 스키마 기반 다중 후보 체인 탐색 엔진 (VST 이펙터 & 생성 폴더 dry/ 기준)
+- 정답·후보를 VST 이펙터(808_scream 등) 기준으로 설정
+- 입력 dry 경로는 생성 폴더(--dataset, 기본값: data/synthetic/step1_vst_v0_임시)의 dry/ 사용
+- 5번(지도학습 모델) 상위 K개 후보 형식(estimation.chain.make_candidates) 호환
+- 후보별 CMA-ES 탐색 실행, 소요 시간 측정 및 유사도순(Loss 오름차순) 정렬
+
+Usage (프로젝트 루트에서)
+-------------------------
+python -m search.pipeline
+python -m search.pipeline --dataset data/synthetic/step1_vst_v0_임시 --budget 40 --restarts 2
 """
 import os
 import json
@@ -17,7 +22,6 @@ import soundfile as sf
 import cma
 
 from effects import load_effects, render_chain
-from effects.render import find_plugin
 from metrics.spectral import spectral_distance
 
 try:
@@ -27,19 +31,10 @@ except ImportError:
     HAS_ESTIMATION = False
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_DATASET_DIR = PROJECT_ROOT / "data" / "synthetic"
+DEFAULT_DATASET_DIR = PROJECT_ROOT / "data" / "synthetic" / "step1_vst_v0_임시"
 SCHEMAS_DIR = PROJECT_ROOT / "schemas"
 OUTPUT_DIR = PROJECT_ROOT / "outputs" / "search"
 PENALTY = 1e3
-
-# Step 0 스크립트 하위 호환용 상수 유지
-PARAM_SPECS = [
-    ("overdrive.hpf_freq", 150.0, 250.0, False),
-    ("overdrive.drive", 25.0, 40.0, False),
-    ("overdrive.lpf_freq", 3000.0, 5000.0, False),
-    ("overdrive.level", -2.0, 2.0, False),
-]
-PARAM_NAMES = [s[0] for s in PARAM_SPECS]
 
 
 # ----------------------------------------------------------------------
@@ -47,8 +42,8 @@ PARAM_NAMES = [s[0] for s in PARAM_SPECS]
 # ----------------------------------------------------------------------
 class ChainParameterSpec:
     """
-    주어진 체인 구조(예: ["compressor", "808_scream"])에 대해
-    schemas/effects.data.json을 읽어 연속형 노브들의 탐색 범위와 스케일(linear/log)을 동적으로 구성합니다.
+    주어진 체인 구조(예: ["808_scream"] 또는 ["compressor", "808_scream"])에 대해
+    schemas/effects.data.json을 읽어 노브 탐색 범위와 스케일(linear/log)을 동적으로 구성합니다.
     """
     def __init__(self, effect_types, effects_def=None, amp_id="fixed_amp_v1"):
         self.effects_def = effects_def or load_effects()
@@ -125,92 +120,8 @@ class ChainParameterSpec:
 
 
 # ----------------------------------------------------------------------
-# [2] 도영님(5번) 모델 연동 어댑터 & 인벤토리 필터링
+# [2] 사용자 보유 이펙터(user_inventory) 필터링 및 5번 모델 후보 호환
 # ----------------------------------------------------------------------
-def is_vst_available(class_name="MultiDrivePro"):
-    """현재 PC에 VST3 플러그인 파일이 설치되어 있는지 확인합니다."""
-    try:
-        find_plugin(class_name)
-        return True
-    except FileNotFoundError:
-        return False
-
-
-def build_estimation_definitions(effects_def=None, include_vst=True):
-    """
-    estimation/chain.py의 make_candidates()가 요구하는 'active_params' 필드를 포함하여
-    gain_stage 이펙터 정의 딕셔너리를 생성합니다 (VST 7종 및 pedalboard 호환).
-    """
-    effects_def = effects_def or load_effects()
-    result = {}
-    for name, definition in effects_def.items():
-        if definition.get("category") != "gain_stage":
-            continue
-        if not include_vst and definition.get("source") == "vst":
-            continue
-        classes = definition.get("composite_of") or [definition["class_name"]]
-        params = [
-            p for p in definition["params"]
-            if p["maps_to"].partition(".")[0] in classes and "." in p["maps_to"]
-        ]
-        result[name] = dict(definition, active_params=params)
-    return result
-
-
-def build_candidates_from_cnn_prediction(prediction, owned_effect_types, k=3, effects_def=None, include_vst=True):
-    """
-    5번 CNN 모델의 예측 결과(probabilities, values)를 받아 상위 K개 후보 리스트를 생성합니다.
-    - 확률 총합이 1.0이 되도록 자동 보정하여 estimation.chain.make_candidates의 검증을 통과시킵니다.
-    """
-    defs = build_estimation_definitions(effects_def, include_vst=include_vst)
-    expected_keys = ["bypass"] + list(defs.keys())
-
-    raw_probs = prediction.get("probabilities", {})
-    clean_probs = {key: max(0.0, float(raw_probs.get(key, 0.0))) for key in expected_keys}
-    total_p = sum(clean_probs.values())
-    if total_p <= 0:
-        clean_probs = {key: 1.0 / len(expected_keys) for key in expected_keys}
-    else:
-        clean_probs = {key: val / total_p for key, val in clean_probs.items()}
-
-    raw_values = prediction.get("values", {})
-    clean_values = {}
-    for etype, edef in defs.items():
-        defaults = {p["name"]: p["default"] for p in edef["params"]}
-        if etype in raw_values and isinstance(raw_values[etype], dict):
-            defaults.update(raw_values[etype])
-        clean_values[etype] = defaults
-
-    normalized_pred = {"probabilities": clean_probs, "values": clean_values}
-
-    if HAS_ESTIMATION:
-        return estimation_make_candidates(
-            normalized_pred,
-            owned_effect_types=owned_effect_types,
-            k=k,
-            definitions=defs,
-        )
-
-    # estimation 모듈이 없을 때의 자체 호환 폴백
-    allowed = {"bypass"} | (set(owned_effect_types) & set(defs))
-    ranked = sorted(allowed, key=lambda t: (-clean_probs[t], t))[:k]
-    candidates = []
-    for t in ranked:
-        if t == "bypass":
-            candidates.append({"effect_type": "bypass", "model_score": clean_probs[t], "x0": []})
-        else:
-            spec = ChainParameterSpec([t], effects_def=effects_def)
-            chain_dict = {"amp_id": "fixed_amp_v1", "chain": [{"effect_type": t, "values": clean_values[t]}]}
-            vec = spec.chain_to_vector(chain_dict)
-            candidates.append({
-                "effect_type": t,
-                "model_score": clean_probs[t],
-                "chain": chain_dict,
-                "x0": spec.normalize(vec).tolist(),
-            })
-    return candidates
-
-
 def load_user_inventory(inventory_path=None):
     path = Path(inventory_path) if inventory_path else (SCHEMAS_DIR / "user_inventory.data.json")
     with open(path, encoding="utf-8") as f:
@@ -220,11 +131,11 @@ def load_user_inventory(inventory_path=None):
 
 def extract_effect_types(candidate):
     """
-    모든 형태의 후보 입력에서 이펙터 이름 리스트를 추출합니다:
-    - 도영님 모델 candidate: {"effect_type": "808_scream", "x0": [...], ...}
-    - 다중 체인 딕셔너리: {"effect_types": ["compressor", "808_scream"], ...}
-    - chain.schema.json 형태: {"amp_id": ..., "chain": [{"effect_type": ...}]}
-    - 단순 리스트: ["compressor", "808_scream"]
+    다양한 후보 입력 형식을 모두 지원:
+    1) 5번 모델(make_candidates) 출력: {"effect_type": "808_scream", "x0": [...], "model_score": 0.6}
+    2) 다중 체인 딕셔너리: {"effect_types": ["compressor", "808_scream"], "initial_chain": {...}}
+    3) chain.schema.json 형태: {"amp_id": ..., "chain": [{"effect_type": ...}]}
+    4) 단순 리스트: ["compressor", "808_scream"]
     """
     if isinstance(candidate, dict):
         if "effect_type" in candidate:
@@ -258,6 +169,24 @@ def filter_candidates_by_inventory(candidate_configs, owned_effect_types):
     return kept, dropped
 
 
+def build_estimation_definitions(effects_def=None, source_filter="vst"):
+    """5번 모델(estimation/chain.py)과 호환되는 active_params 포함 정의 생성"""
+    effects_def = effects_def or load_effects()
+    result = {}
+    for name, definition in effects_def.items():
+        if definition.get("category") != "gain_stage":
+            continue
+        if source_filter and definition.get("source") != source_filter:
+            continue
+        classes = definition.get("composite_of") or [definition["class_name"]]
+        params = [
+            p for p in definition["params"]
+            if p["maps_to"].partition(".")[0] in classes and "." in p["maps_to"]
+        ]
+        result[name] = dict(definition, active_params=params)
+    return result
+
+
 # ----------------------------------------------------------------------
 # [3] 평가 추적기 및 탐색 알고리즘 (Restart CMA-ES)
 # ----------------------------------------------------------------------
@@ -286,8 +215,7 @@ class Tracker:
             if not np.isfinite(loss):
                 loss = PENALTY
         except Exception as e:
-            print(f"[WARN] 렌더링/평가 실패 -> penalty: {e}")
-            loss = PENALTY
+            raise RuntimeError(f"렌더링 또는 평가 실패: {e}") from e
 
         self.n += 1
         if loss < self.best_loss:
@@ -341,7 +269,6 @@ def run_cma_es_for_chain(objective_fn, spec: ChainParameterSpec, budget=40, seed
         else:
             x0 = rng.uniform(0.1, 0.9, spec.dim)
 
-        # 초기점(x0)을 먼저 1회 평가하여 Warm-start 성능 보장
         tr(x0)
         if tr.exhausted or sub_budget <= 1:
             continue
@@ -374,7 +301,7 @@ def run_cma_es_for_chain(objective_fn, spec: ChainParameterSpec, budget=40, seed
 
 
 # ----------------------------------------------------------------------
-# [4] 상위 K개 후보 탐색 및 유사도순 정렬 (VST 시간 측정 + 모델 연동)
+# [4] 후보 체인별 CMA-ES 탐색 및 유사도순 정렬
 # ----------------------------------------------------------------------
 def search_and_rank_chains(
     dry_audio,
@@ -430,8 +357,8 @@ def search_and_rank_chains(
                 except Exception:
                     pass
 
-        warm_tag = " (Warm-start x0 적용)" if (x0_norm is not None or init_real is not None) else ""
-        print(f"[Search] 후보 탐색 시작: {label:<28} | 차원: {spec.dim} | 예산: {budget}회{warm_tag}")
+        warm_tag = " (Warm-start 적용)" if (x0_norm is not None or init_real is not None) else ""
+        print(f"[Search] 후보 탐색 시작: {label:<30} | 차원: {spec.dim} | 예산: {budget}회{warm_tag}")
         start_cand = time.perf_counter()
 
         best_overall = None
@@ -470,7 +397,7 @@ def search_and_rank_chains(
         ranked_results.append(best_overall)
 
     total_elapsed = time.perf_counter() - start_total
-    print(f"\n[INFO] 탐색 총 소요 시간: {total_elapsed:.2f}초 (후보 {len(valid_candidates)}개 완료)")
+    print(f"\n[INFO] VST 탐색 총 소요 시간: {total_elapsed:.2f}초 (후보 {len(valid_candidates)}개 완료)")
 
     ranked_results.sort(key=lambda r: r["loss"])
     for rank_idx, item in enumerate(ranked_results, start=1):
@@ -480,47 +407,59 @@ def search_and_rank_chains(
 
 
 # ----------------------------------------------------------------------
-# [5] 데이터 로딩 (생성 폴더의 dry/ 우선 사용) 및 리포트 출력
+# [5] 생성 폴더의 dry/ 로드 (원본 dry 자동 대체 제거) 및 결과 리포트
 # ----------------------------------------------------------------------
-def load_step1_dry_sample(dataset_dir=None, duration_sec=1.0):
+def load_generated_dry_sample(dataset_dir=None, duration_sec=1.0):
     """
-    Task 4 요구사항: 원본 dry가 아닌 생성 폴더의 dry/를 최우선으로 로드합니다.
-    1순위: 생성 폴더 내 manifest.json의 render_input 경로
-    2순위: 생성 폴더 내 **/dry/*.wav
-    3순위: 로컬에 생성된 dry/가 아직 없을 경우 data/dry/ 원본에서 로드 후 피크 -12dBFS 정규화 적용
+    생성 데이터셋 폴더(--dataset) 안의 dry/ 음원을 로드합니다.
+    (원본 data/dry/로 임의 대체하면 정답 wet과 음량 기준이 달라지므로 생성 폴더의 dry/만 탐색)
     """
-    ds_root = Path(dataset_dir) if dataset_dir else DEFAULT_DATASET_DIR
-    candidates = []
+    ds_path = Path(dataset_dir) if dataset_dir else DEFAULT_DATASET_DIR
 
-    for mf in ds_root.glob("**/manifest.json"):
-        try:
-            with open(mf, encoding="utf-8") as f:
-                mdata = json.load(f)
-            for item in mdata.get("dry_id_map", []):
-                rel = item.get("render_input", "")
-                if not rel:
-                    continue
-                for p in (mf.parent / rel, PROJECT_ROOT / rel):
-                    if p.exists() and p.is_file():
-                        candidates.append(p)
-        except Exception:
-            pass
+    search_roots = [ds_path]
+    if not ds_path.exists():
+        # 상위 data/synthetic 아래에 다른 생성 폴더가 있는지 함께 확인
+        synth_root = PROJECT_ROOT / "data" / "synthetic"
+        if synth_root.exists():
+            search_roots.append(synth_root)
 
-    if not candidates:
-        candidates = sorted(list(ds_root.glob("**/dry/*.wav")))
+    wav_files = []
+    for root in search_roots:
+        if not root.exists():
+            continue
+        # 1) manifest.json의 render_input 확인
+        for mf in sorted(root.glob("**/manifest.json")):
+            try:
+                with open(mf, encoding="utf-8") as f:
+                    mdata = json.load(f)
+                for item in mdata.get("dry_id_map", []):
+                    rel = item.get("render_input", "")
+                    if not rel:
+                        continue
+                    for p in (mf.parent / rel, root / rel, PROJECT_ROOT / rel):
+                        if p.exists() and p.is_file():
+                            wav_files.append(p)
+            except Exception:
+                pass
+        # 2) dry/*.wav 직접 탐색
+        if not wav_files:
+            if root.name == "dry":
+                wav_files.extend(sorted(root.glob("*.wav")))
+            else:
+                wav_files.extend(sorted(root.glob("dry/*.wav")))
+                wav_files.extend(sorted(root.glob("**/dry/*.wav")))
+        if wav_files:
+            break
 
-    is_fallback = False
-    if not candidates:
-        fallback_files = sorted(list((PROJECT_ROOT / "data" / "dry").glob("**/*.wav")))
-        if not fallback_files:
-            raise FileNotFoundError("사용 가능한 Dry .wav 음원을 찾을 수 없습니다.")
-        path = fallback_files[0]
-        is_fallback = True
-        print(f"[INFO] 생성 폴더({ds_root.name}) 내 dry/ 폴더가 없어 원본 Dry를 로드하여 -12dBFS 정규화합니다: {path.name}")
-    else:
-        path = candidates[0]
-        print(f"[INFO] 생성 폴더 Dry 오디오 로드 완료: {path}")
+    if not wav_files:
+        raise FileNotFoundError(
+            f"\n[ERROR] 생성 폴더의 dry/ 음원을 찾을 수 없습니다! (확인한 경로: {ds_path / 'dry'})\n"
+            "해결 방법:\n"
+            "  1) 공유 드라이브의 'step1_vst_v0_임시' 폴더를 data/synthetic/ 아래에 다운로드하거나,\n"
+            "  2) python -m search.pipeline --dataset <생성폴더경로> 형태로 실행해 주세요."
+        )
 
+    path = wav_files[0]
     audio, sr = sf.read(str(path), dtype="float32")
     if audio.ndim > 1:
         audio = audio.mean(axis=1)
@@ -533,13 +472,7 @@ def load_step1_dry_sample(dataset_dir=None, duration_sec=1.0):
         s = int(starts[int(np.argmax(energies))])
         audio = audio[s:s + win]
 
-    # 생성 폴더의 dry/ 규칙(피크 -12 dBFS 정규화)과 동일하게 맞춤
-    if is_fallback:
-        peak = float(np.max(np.abs(audio)))
-        if peak > 1e-8:
-            target_peak = 10.0 ** (-12.0 / 20.0)
-            audio = audio * (target_peak / peak)
-
+    print(f"[INFO] 생성 폴더 Dry 오디오 로드 완료: {path} (sr={sr}, 길이={len(audio) / sr:.2f}s)")
     return np.ascontiguousarray(audio, dtype=np.float32), sr, path.name
 
 
@@ -550,7 +483,7 @@ def format_chain_label(effect_types):
 def print_ranking_report(ranked_results, dropped, owned_effect_types, ground_truth_chain=None):
     width = 104
     print("\n" + "=" * width)
-    print("[Step 1 탐색 엔진] 모델 상위 K개 후보 기반 탐색 및 유사도순 정렬 리포트")
+    print("[Step 1 탐색 엔진] VST 후보 체인 탐색 및 유사도순 정렬 리포트")
     print("-" * width)
     print(f"보유 이펙터 (user_inventory): {owned_effect_types}")
     if dropped:
@@ -596,64 +529,45 @@ def print_ranking_report(ranked_results, dropped, owned_effect_types, ground_tru
 
 
 # ----------------------------------------------------------------------
-# [6] 메인 파이프라인 실행
+# [6] 메인 파이프라인 실행 (기본 VST 이펙터 808_scream 기준)
 # ----------------------------------------------------------------------
-def run_search_pipeline(budget=40, n_restarts=2, n_seeds=1, dataset_path=None, inventory_override=None, top_k=3):
+DEFAULT_VST_CANDIDATES = [
+    {"effect_types": ["808_scream"]},
+    {"effect_types": ["b_drive"]},
+    {"effect_types": ["compressor", "808_scream"]},
+    {"effect_types": ["808_scream", "eq_3band"]},
+    {"effect_types": ["compressor", "808_scream", "eq_3band"]},
+]
+
+
+def run_search_pipeline(budget=40, n_restarts=2, n_seeds=1, dataset_path=None, inventory_override=None):
     effects_def = load_effects()
-    dry_audio, sr, _ = load_step1_dry_sample(dataset_dir=dataset_path)
+    dry_audio, sr, _ = load_generated_dry_sample(dataset_dir=dataset_path)
     owned_effects = inventory_override if inventory_override is not None else load_user_inventory()
 
-    vst_ready = is_vst_available("MultiDrivePro")
-
-    if vst_ready:
-        target_effect = "808_scream"
-        gt_values = {"level": 50.0, "overdrive": 70.0, "tone": 40.0}
-        # 인벤토리에 VST가 없으면 테스트를 위해VST 7종 추가
-        if not any(effects_def.get(e, {}).get("source") == "vst" for e in owned_effects):
-            owned_effects = list(owned_effects) + ["808_scream", "b_drive", "o_drive"]
-    else:
-        print("[INFO] 현재 PC에 MultiDrivePro VST3가 설치되지 않아 pedalboard 이펙터('overdrive', 'distortion', 'fuzz')로 탐색을 진행합니다.")
-        target_effect = "overdrive"
-        gt_values = {"hpf_freq": 180.0, "drive": 35.0, "lpf_freq": 4200.0, "level": 0.5}
-        # 인벤토리에 pedalboard 드라이브가 없으면 추가
-        if not any(e in owned_effects for e in ("overdrive", "distortion", "fuzz")):
-            owned_effects = list(owned_effects) + ["overdrive", "distortion", "fuzz"]
-
+    # 피드백 4번 반영: 정답 체인을 VST 이펙터(808_scream, 노브 3개 level·overdrive·tone)로 설정
     ground_truth_chain = {
         "amp_id": "fixed_amp_v1",
-        "chain": [{"effect_type": target_effect, "values": gt_values}],
+        "chain": [
+            {
+                "effect_type": "808_scream",
+                "values": {"level": 50.0, "overdrive": 70.0, "tone": 40.0},
+            }
+        ],
     }
     target_audio = render_chain(dry_audio, sr, ground_truth_chain, effects=effects_def)
 
-    # 5번(도영님) CNN 모델 예측 출력 시뮬레이션 -> make_candidates로 상위 K개 후보 생성
-    defs_for_cnn = build_estimation_definitions(effects_def, include_vst=vst_ready)
-    raw_probs = {etype: 0.05 for etype in ["bypass"] + list(defs_for_cnn.keys())}
-    raw_probs[target_effect] = 0.65
-    second_choice = "b_drive" if (vst_ready and "b_drive" in defs_for_cnn) else "distortion"
-    if second_choice in raw_probs:
-        raw_probs[second_choice] = 0.25
-
-    mock_prediction = {
-        "probabilities": raw_probs,
-        "values": {
-            etype: {p["name"]: p["default"] for p in defs_for_cnn[etype]["params"]}
-            for etype in defs_for_cnn
-        },
-    }
-
-    candidates = build_candidates_from_cnn_prediction(
-        mock_prediction,
-        owned_effect_types=owned_effects,
-        k=top_k,
-        effects_def=effects_def,
-        include_vst=vst_ready,
+    sanity_loss = spectral_distance(
+        render_chain(dry_audio, sr, ground_truth_chain, effects=effects_def),
+        target_audio,
     )
+    print(f"[CHECK] 정답 체인(808_scream)에서의 loss = {sanity_loss:.6e} (0에 가까워야 정상)\n")
 
     ranked_results, dropped = search_and_rank_chains(
         dry_audio=dry_audio,
         sr=sr,
         target_audio=target_audio,
-        candidate_configs=candidates,
+        candidate_configs=DEFAULT_VST_CANDIDATES,
         owned_effect_types=owned_effects,
         effects_def=effects_def,
         budget=budget,
@@ -674,13 +588,14 @@ def run_search_pipeline(budget=40, n_restarts=2, n_seeds=1, dataset_path=None, i
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Step 1: Top-K Model Candidates Search & Ranking")
+    p = argparse.ArgumentParser(description="Step 1: VST Multi-Chain CMA-ES Search & Ranking")
+    p.add_argument("--dataset", type=str, default=str(DEFAULT_DATASET_DIR),
+                   help="생성 데이터셋 폴더 경로 (내부에 dry/ 폴더 포함, 기본값: data/synthetic/step1_vst_v0_임시)")
     p.add_argument("--budget", type=int, default=40, help="후보 체인당 평가 횟수 예산 (기본값: 40)")
     p.add_argument("--restarts", type=int, default=2, help="CMA-ES 분할 재시작 횟수 (기본값: 2)")
     p.add_argument("--seeds", type=int, default=1, help="반복 시드 수")
-    p.add_argument("--top-k", type=int, default=3, help="모델에서 받아올 상위 K개 후보 수 (기본값: 3)")
-    p.add_argument("--dataset", type=str, default=None, help="생성 데이터셋 폴더 경로")
-    p.add_argument("--inventory", type=str, nargs="*", default=None, help="보유 이펙터 오버라이드")
+    p.add_argument("--inventory", type=str, nargs="*", default=None,
+                   help="보유 이펙터 목록 직접 지정 (미지정 시 schemas/user_inventory.data.json 사용)")
     return p.parse_args()
 
 
@@ -692,5 +607,4 @@ if __name__ == "__main__":
         n_seeds=args.seeds,
         dataset_path=args.dataset,
         inventory_override=args.inventory,
-        top_k=args.top_k,
     )
