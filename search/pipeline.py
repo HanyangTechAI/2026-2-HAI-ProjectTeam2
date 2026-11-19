@@ -235,13 +235,22 @@ def run_cma_es_for_chain(
     initial_values=None,
     evaluate_initial=True,
     strict=False,
+    x0_norm=None,
 ):
+    """initial_values: 실제 노브 값 / x0_norm: 0~1 정규화 좌표 (estimation/refine.py가 사용). 둘 중 하나만."""
     if not isinstance(budget, int) or budget < 1 or not isinstance(n_runs, int) or n_runs < 1:
         raise ValueError("budget and n_runs must be positive integers")
+    if initial_values is not None and x0_norm is not None:
+        raise ValueError("initial_values와 x0_norm 중 하나만 전달하세요.")
 
     init_norm = None
     if initial_values is not None:
         init_norm = spec.normalize(initial_values)
+    elif x0_norm is not None:
+        init_norm = np.asarray(x0_norm, dtype=float)
+        if init_norm.shape != (spec.dim,) or not np.isfinite(init_norm).all():
+            raise ValueError(f"Expected finite x0_norm of shape ({spec.dim},), got {init_norm.shape}")
+        init_norm = np.clip(init_norm, 0.0, 1.0)
 
     rng = np.random.default_rng(seed)
     tr = Tracker(objective_fn, spec, budget, strict=strict)
@@ -345,18 +354,14 @@ def search_and_rank_chains(
         and "x0" in candidate_chains[0]
         and initial_guesses is None
     ):
-        try:
-            from estimation.refine import to_search_inputs
-            candidate_chains, initial_guesses = to_search_inputs(candidate_chains, effects_def)
-        except Exception:
-            initial_guesses = {}
-            converted = []
-            for item in candidate_chains:
-                ch = item.get("chain", {"amp_id": "fixed_amp_v1", "chain": []})
-                etypes_key = tuple(extract_effect_types(ch))
-                converted.append(ch)
-                initial_guesses[etypes_key] = ch
-            candidate_chains = converted
+        # 5번 모델(make_candidates) 출력: 각 후보의 chain(실제 노브 값)을 시작점으로 사용
+        initial_guesses = {}
+        converted = []
+        for item in candidate_chains:
+            ch = item.get("chain", {"amp_id": "fixed_amp_v1", "chain": []})
+            converted.append(ch)
+            initial_guesses[tuple(extract_effect_types(ch))] = ch
+        candidate_chains = converted
 
     # 1. 인벤토리 필터링
     if owned_effect_types is not None:

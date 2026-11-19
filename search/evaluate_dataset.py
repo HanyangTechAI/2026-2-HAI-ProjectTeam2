@@ -16,16 +16,40 @@ import numpy as np
 import soundfile as sf
 
 from effects import load_effects
+from effects.render import find_plugin
+from estimation.chain import DRIVES, catalog, make_candidates
 from search.pipeline import (
     DEFAULT_DATASET_DIR,
     search_and_rank_chains,
     extract_effect_types,
     load_user_inventory,
-    build_estimation_definitions,
-    is_vst_available,
 )
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def is_vst_available(class_name="MultiDrivePro"):
+    try:
+        find_plugin(class_name)
+        return True
+    except FileNotFoundError:
+        return False
+
+
+class CnnPredictor:
+    """5번(도영님) CNN: 생성 dry + 목표 wet을 함께 넣어 7종 확률과 노브 초기값을 예측합니다."""
+    def __init__(self, checkpoint_path):
+        from estimation.infer import load_predictor  # torch 필요 (.conda-cnn 환경)
+        self.model, self.config, self.state = load_predictor(checkpoint_path)
+
+    def __call__(self, dry_path, wet_path, sr):
+        from estimation.audio import read_audio, segment
+        from estimation.infer import predict_pair
+        if sr != self.config.sample_rate:
+            raise ValueError(f"CNN 샘플레이트({self.config.sample_rate})와 데이터({sr})가 다릅니다.")
+        dry = segment(read_audio(str(dry_path), self.config.sample_rate), self.config)
+        ref = segment(read_audio(str(wet_path), self.config.sample_rate), self.config, reject_silence=False)
+        return predict_pair(self.model, self.config, dry, ref, self.state["distance_settings"])
 
 
 def find_generated_dry_path(base_dir: Path, dry_sample_id: str, dry_map: dict) -> Path:
@@ -49,68 +73,37 @@ def find_generated_dry_path(base_dir: Path, dry_sample_id: str, dry_map: dict) -
 
 
 def get_cnn_top_k_candidates(
-    wet_audio: np.ndarray,
+    dry_path: Path,
+    wet_path: Path,
     sr: int,
     target_id: str,
     owned_effects: list,
-    effects_def: dict,
     top_k: int = 3,
-    checkpoint_path: str = None,
+    predictor=None,
     predictions_json: dict = None,
-    source_filter: str = "vst",
 ):
     """
-    정답(gt_etypes)을 일절 참조하지 않고 오직 타겟 음원(wet_audio)과 CNN 모델만으로
-    상위 K개 후보(x0 포함)를 생성합니다.
+    정답(gt_etypes)을 참조하지 않고 CNN 예측만으로 상위 K개 후보(x0 포함)를 생성합니다.
+    1순위: 사전 예측 JSON(target_id → infer.py 출력) / 2순위: CNN checkpoint 직접 추론
+    CNN이 없으면 순위를 매길 수 없으므로 보유 드라이브 전체를 기본 노브로 탐색합니다.
     """
-    defs = build_estimation_definitions(effects_def, source_filter=source_filter)
+    defs = catalog()
 
-    # 1순위: 사전 추론된 predictions JSON 파일에서 해당 target_id의 예측값 로드
     pred = None
     if predictions_json and target_id in predictions_json:
         pred = predictions_json[target_id]
+    elif predictor is not None:
+        pred = predictor(dry_path, wet_path, sr)
 
-    # 2순위: estimation 모듈의 CNN 추론 함수 호출 (도영님 모델 연동)
-    if pred is None:
-        try:
-            from estimation import model as est_model
-            for fn_name in ("predict", "predict_audio", "infer", "estimate"):
-                if hasattr(est_model, fn_name):
-                    fn = getattr(est_model, fn_name)
-                    pred = fn(wet_audio, sr, checkpoint_path=checkpoint_path) if checkpoint_path else fn(wet_audio, sr)
-                    break
-        except Exception:
-            pred = None
-
-    # CNN 예측 결과가 있으면 make_candidates로 상위 K개 생성
     if pred is not None:
-        try:
-            from estimation.chain import make_candidates
-            return make_candidates(pred, owned_effect_types=owned_effects, k=top_k, definitions=defs), "CNN-TopK"
-        except Exception as e:
-            print(f"[WARN] make_candidates 변환 실패 ({e}) -> 기본 균등 후보로 대체")
+        return make_candidates(pred, owned_effect_types=owned_effects, k=top_k, definitions=defs), "CNN-TopK"
 
-    # 3순위 (CNN 가중치 미지정 시): 정답 컨닝 없이 보유 이펙터(gain_stage)에서 균등 확률로 후보 생성
-    expected_keys = ["bypass"] + list(defs.keys())
-    uniform_prob = 1.0 / len(expected_keys)
-    unbiased_pred = {
-        "probabilities": {k: uniform_prob for k in expected_keys},
-        "values": {
-            etype: {p["name"]: p["default"] for p in defs[etype]["params"]}
-            for etype in defs
-        },
+    uniform = {
+        "probabilities": {d: 1.0 / len(DRIVES) for d in DRIVES},
+        "values": {d: {p["name"]: p["default"] for p in defs[d]["params"] if p["type"] == "continuous"}
+                   for d in DRIVES},
     }
-    try:
-        from estimation.chain import make_candidates
-        return make_candidates(
-            unbiased_pred,
-            owned_effect_types=owned_effects,
-            k=min(top_k, len(expected_keys)),
-            definitions=defs,
-        ), "Unbiased-All"
-    except Exception:
-        allowed = [e for e in defs.keys() if e in owned_effects][:top_k]
-        return [{"effect_types": [e]} for e in allowed], "Unbiased-Fallback"
+    return make_candidates(uniform, owned_effect_types=owned_effects, k=len(DRIVES), definitions=defs), "All-Drives"
 
 
 def evaluate_dataset(
@@ -129,22 +122,24 @@ def evaluate_dataset(
 
     effects_def = load_effects()
     vst_ready = is_vst_available("MultiDrivePro")
-    source_filter = "vst" if vst_ready else "pedalboard"
+    if not vst_ready:
+        print("[WARN] MultiDrive PRO 플러그인이 없어 VST 데이터셋을 평가할 수 없습니다.")
+        return
+    source_filter = "vst"
 
-    # 평가 시 보유 이펙터 로드 (VST 평가 시 VST 7종 전체 보유 가정 가능)
+    # 평가 시 보유 이펙터: VST 드라이브 7종 전체 보유로 가정
     owned_effects = load_user_inventory()
-    active_drives = [
-        k for k, v in effects_def.items()
-        if v.get("category") == "gain_stage" and v.get("source") == source_filter
-    ]
-    for d in active_drives:
+    for d in DRIVES:
         if d not in owned_effects:
             owned_effects.append(d)
 
     predictions_json = None
-    if predictions_path and Path(predictions_path).exists():
+    if predictions_path:
         with open(predictions_path, encoding="utf-8") as f:
             predictions_json = json.load(f)
+    predictor = CnnPredictor(checkpoint_path) if checkpoint_path else None
+    if predictor is None and predictions_json is None:
+        print("[WARN] --checkpoint/--predictions 없음 -> CNN 순위 없이 보유 드라이브 전체를 탐색합니다.")
 
     dry_map = {}
     manifest_files = sorted(dataset_dir.glob("**/manifest.json"))
@@ -179,6 +174,10 @@ def evaluate_dataset(
         gt_etypes = extract_effect_types(gt_chain)
         if any(e not in effects_def for e in gt_etypes):
             continue
+        # CNN 후보는 드라이브 1개짜리이므로 정답 체인의 드라이브 종류로 비교 (컴프·EQ 제외)
+        gt_drive = next((e for e in gt_etypes if e in DRIVES), None)
+        if gt_drive is None:
+            continue
         if any(effects_def[e].get("source") == "vst" for e in gt_etypes) and not vst_ready:
             continue
 
@@ -205,26 +204,25 @@ def evaluate_dataset(
 
         # 핵심 수정: 정답(gt_etypes)을 후보에 강제로 넣지 않고 CNN 상위 K개 후보만 생성
         candidates, cand_mode = get_cnn_top_k_candidates(
-            wet_audio=wet_target,
+            dry_path=dry_path,
+            wet_path=wet_path,
             sr=sr,
             target_id=target_id,
             owned_effects=owned_effects,
-            effects_def=effects_def,
             top_k=top_k,
-            checkpoint_path=checkpoint_path,
+            predictor=predictor,
             predictions_json=predictions_json,
-            source_filter=source_filter,
         )
 
-        cand_etypes_list = [extract_effect_types(c) for c in candidates]
-        in_top_k = gt_etypes in cand_etypes_list
+        cand_drives = [c["effect_type"] for c in candidates]
+        in_top_k = gt_drive in cand_drives
 
         start_time = time.perf_counter()
         ranked, _ = search_and_rank_chains(
             dry_audio=dry,
             sr=sr,
             target_audio=wet_target,
-            candidate_configs=candidates,
+            candidate_chains=candidates,
             owned_effect_types=owned_effects,
             effects_def=effects_def,
             budget=budget,
@@ -239,7 +237,7 @@ def evaluate_dataset(
             "gt_chain": "->".join(gt_etypes),
             "pred_chain": "->".join(best["effect_types"]),
             "in_top_k": in_top_k,
-            "top1_match": best["effect_types"] == gt_etypes,
+            "top1_match": best["effect_types"] == [gt_drive],
             "loss": best["loss"],
             "time": elapsed,
         })
@@ -259,8 +257,12 @@ def evaluate_dataset(
     top1_acc = np.mean([r["top1_match"] for r in results_log]) * 100.0
     avg_loss = np.mean([r["loss"] for r in results_log])
     avg_time = np.mean([r["time"] for r in results_log])
-    print(f"[검증 요약] 상위 {top_k}개 내 정답 포함 비율(Top-{top_k} Recall): {topk_recall:.1f}% | "
-          f"최종 1위 맞힘 정확도(Top-1 Acc): {top1_acc:.1f}%")
+    if all(r["mode"] == "All-Drives" for r in results_log):
+        print(f"[검증 요약] (CNN 없음: 7종 전체 탐색, Top-K 포함률은 의미 없음) "
+              f"최종 1위 맞힘 정확도(Top-1 Acc): {top1_acc:.1f}%")
+    else:
+        print(f"[검증 요약] 상위 {top_k}개 내 정답 포함 비율(Top-{top_k} Recall): {topk_recall:.1f}% | "
+              f"최종 1위 맞힘 정확도(Top-1 Acc): {top1_acc:.1f}%")
     print(f"            평균 Loss: {avg_loss:.6f} | 타겟당 평균 소요 시간: {avg_time:.2f}초")
     print("=" * 96)
 
