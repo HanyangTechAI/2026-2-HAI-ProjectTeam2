@@ -1,16 +1,12 @@
 """
 search/pipeline.py
 
-Step 1: 스키마 기반 다중 후보 체인 탐색 엔진 (VST 이펙터 & 생성 폴더 dry/ 기준)
-- 정답·후보를 VST 이펙터(808_scream 등) 기준으로 설정
-- 입력 dry 경로는 생성 폴더(--dataset, 기본값: data/synthetic/step1_vst_v0_임시)의 dry/ 사용
-- 5번(지도학습 모델) 상위 K개 후보 형식(estimation.chain.make_candidates) 호환
-- 후보별 CMA-ES 탐색 실행, 소요 시간 측정 및 유사도순(Loss 오름차순) 정렬
-
-Usage (프로젝트 루트에서)
--------------------------
-python -m search.pipeline
-python -m search.pipeline --dataset data/synthetic/step1_vst_v0_임시 --budget 40 --restarts 2
+Step 1: 스키마 기반 다중 후보 체인 탐색 엔진
+- 사용자 보유 이펙터(user_inventory) 기반 후보 체인 필터링
+- 후보 체인별 동적 파라미터 공간 구성 (schemas/effects.data.json 연동)
+- 후보 체인별 Restart CMA-ES 실행 및 유사도(Loss 오름차순) 정렬
+- 5번 지도학습 모델 초기 추정값(to_search_inputs / initial_guesses) Warm-start 완벽 호환
+- 학습·탐색 입력을 생성 폴더의 dry/로 사용 및 VST 탐색 소요 시간 측정
 """
 import os
 import json
@@ -24,12 +20,6 @@ import cma
 from effects import load_effects, render_chain
 from metrics.spectral import spectral_distance
 
-try:
-    from estimation.chain import make_candidates as estimation_make_candidates
-    HAS_ESTIMATION = True
-except ImportError:
-    HAS_ESTIMATION = False
-
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DATASET_DIR = PROJECT_ROOT / "data" / "synthetic" / "step1_vst_v0_임시"
 SCHEMAS_DIR = PROJECT_ROOT / "schemas"
@@ -42,13 +32,14 @@ PENALTY = 1e3
 # ----------------------------------------------------------------------
 class ChainParameterSpec:
     """
-    주어진 체인 구조(예: ["808_scream"] 또는 ["compressor", "808_scream"])에 대해
-    schemas/effects.data.json을 읽어 노브 탐색 범위와 스케일(linear/log)을 동적으로 구성합니다.
+    주어진 체인 구조(예: ["compressor", "808_scream"])에 대해
+    schemas/effects.data.json을 읽어 연속형 노브들의 탐색 범위와 스케일(linear/log)을 동적으로 구성합니다.
     """
-    def __init__(self, effect_types, effects_def=None, amp_id="fixed_amp_v1"):
+    def __init__(self, effect_types, effects_def=None, amp_id="fixed_amp_v1", round_digits=4):
         self.effects_def = effects_def or load_effects()
         self.effect_types = [e for e in effect_types if e != "bypass"]
         self.amp_id = amp_id
+        self.round_digits = round_digits
 
         self.param_meta = []  # (effect_idx, effect_type, param_name, low, high, is_log)
         self.fixed_values = [{} for _ in self.effect_types]
@@ -57,10 +48,12 @@ class ChainParameterSpec:
             if etype not in self.effects_def:
                 raise ValueError(f"스키마에 정의되지 않은 effect_type: {etype}")
             edef = self.effects_def[etype]
+            param_list = edef.get("active_params", edef["params"])
+            active_names = {p["name"] for p in param_list}
             for p in edef["params"]:
                 pname = p["name"]
                 ptype = p["type"]
-                if ptype == "continuous":
+                if pname in active_names and ptype == "continuous":
                     low, high = float(p["range"][0]), float(p["range"][1])
                     is_log = (p.get("scale") == "log")
                     self.param_meta.append((idx, etype, pname, low, high, is_log))
@@ -76,7 +69,10 @@ class ChainParameterSpec:
     def denormalize(self, x_norm):
         if self.dim == 0:
             return np.array([], dtype=float)
-        x = np.clip(np.asarray(x_norm, dtype=float), 0.0, 1.0)
+        x = np.asarray(x_norm, dtype=float)
+        if x.shape != (self.dim,) or not np.isfinite(x).all():
+            raise ValueError(f"Expected finite normalized vector of shape ({self.dim},), got {x.shape}")
+        x = np.clip(x, 0.0, 1.0)
         diff = np.where(self.highs == self.lows, 1.0, self.highs - self.lows)
         lin = self.lows + x * diff
         with np.errstate(divide="ignore", invalid="ignore"):
@@ -89,8 +85,15 @@ class ChainParameterSpec:
 
     def normalize(self, real_params):
         if self.dim == 0:
+            p = np.asarray(real_params, dtype=float)
+            if p.size != 0:
+                raise ValueError("Expected empty parameter vector for 0-dim spec")
             return np.array([], dtype=float)
         p = np.asarray(real_params, dtype=float)
+        if p.shape != (self.dim,) or not np.isfinite(p).all():
+            raise ValueError(f"Expected finite parameter vector of shape ({self.dim},), got {p.shape}")
+        if np.any(p < self.lows - 1e-9) or np.any(p > self.highs + 1e-9):
+            raise ValueError("Parameter values out of schema range")
         diff = np.where(self.highs == self.lows, 1.0, self.highs - self.lows)
         lin = (p - self.lows) / diff
         with np.errstate(divide="ignore", invalid="ignore"):
@@ -108,7 +111,10 @@ class ChainParameterSpec:
             for idx, etype in enumerate(self.effect_types)
         ]
         for val, (idx, _, pname, _, _, _) in zip(real_params, self.param_meta):
-            chain_list[idx]["values"][pname] = round(float(val), 4)
+            fval = float(val)
+            chain_list[idx]["values"][pname] = (
+                round(fval, self.round_digits) if self.round_digits is not None else fval
+            )
         return {"amp_id": self.amp_id, "chain": chain_list}
 
     def chain_to_vector(self, chain_data):
@@ -120,7 +126,7 @@ class ChainParameterSpec:
 
 
 # ----------------------------------------------------------------------
-# [2] 사용자 보유 이펙터(user_inventory) 필터링 및 5번 모델 후보 호환
+# [2] 사용자 보유 이펙터(user_inventory) 기반 후보 체인 필터링
 # ----------------------------------------------------------------------
 def load_user_inventory(inventory_path=None):
     path = Path(inventory_path) if inventory_path else (SCHEMAS_DIR / "user_inventory.data.json")
@@ -130,23 +136,16 @@ def load_user_inventory(inventory_path=None):
 
 
 def extract_effect_types(candidate):
-    """
-    다양한 후보 입력 형식을 모두 지원:
-    1) 5번 모델(make_candidates) 출력: {"effect_type": "808_scream", "x0": [...], "model_score": 0.6}
-    2) 다중 체인 딕셔너리: {"effect_types": ["compressor", "808_scream"], "initial_chain": {...}}
-    3) chain.schema.json 형태: {"amp_id": ..., "chain": [{"effect_type": ...}]}
-    4) 단순 리스트: ["compressor", "808_scream"]
-    """
     if isinstance(candidate, dict):
-        if "effect_type" in candidate:
-            et = candidate["effect_type"]
-            return [] if et == "bypass" else [et]
-        if "effect_types" in candidate:
-            return [e for e in candidate["effect_types"] if e != "bypass"]
         if "chain" in candidate and isinstance(candidate["chain"], list):
             return [item["effect_type"] for item in candidate["chain"] if item["effect_type"] != "bypass"]
         if "chain" in candidate and isinstance(candidate["chain"], dict):
             return [item["effect_type"] for item in candidate["chain"].get("chain", []) if item["effect_type"] != "bypass"]
+        if "effect_types" in candidate:
+            return [e for e in candidate["effect_types"] if e != "bypass"]
+        if "effect_type" in candidate:
+            et = candidate["effect_type"]
+            return [] if et == "bypass" else [et]
     if isinstance(candidate, (list, tuple)):
         if not candidate:
             return []
@@ -156,10 +155,10 @@ def extract_effect_types(candidate):
     raise ValueError(f"지원하지 않는 후보 체인 형식: {candidate}")
 
 
-def filter_candidates_by_inventory(candidate_configs, owned_effect_types):
+def filter_candidates_by_inventory(candidate_chains, owned_effect_types):
     owned_set = set(owned_effect_types)
     kept, dropped = [], []
-    for cand in candidate_configs:
+    for cand in candidate_chains:
         etypes = extract_effect_types(cand)
         missing = [e for e in etypes if e not in owned_set]
         if not missing:
@@ -169,35 +168,20 @@ def filter_candidates_by_inventory(candidate_configs, owned_effect_types):
     return kept, dropped
 
 
-def build_estimation_definitions(effects_def=None, source_filter="vst"):
-    """5번 모델(estimation/chain.py)과 호환되는 active_params 포함 정의 생성"""
-    effects_def = effects_def or load_effects()
-    result = {}
-    for name, definition in effects_def.items():
-        if definition.get("category") != "gain_stage":
-            continue
-        if source_filter and definition.get("source") != source_filter:
-            continue
-        classes = definition.get("composite_of") or [definition["class_name"]]
-        params = [
-            p for p in definition["params"]
-            if p["maps_to"].partition(".")[0] in classes and "." in p["maps_to"]
-        ]
-        result[name] = dict(definition, active_params=params)
-    return result
-
-
 # ----------------------------------------------------------------------
-# [3] 평가 추적기 및 탐색 알고리즘 (Restart CMA-ES)
+# [3] 단일 체인 최적화기 (Tracker + Restart CMA-ES)
 # ----------------------------------------------------------------------
 class Tracker:
-    def __init__(self, objective_fn, spec: ChainParameterSpec, budget: int):
+    def __init__(self, objective_fn, spec: ChainParameterSpec, budget: int, strict: bool = False):
         self.objective_fn = objective_fn
         self.spec = spec
         self.budget = budget
+        self.strict = strict
         self.n = 0
         self.best_loss = float("inf")
         self.best_norm = np.full(spec.dim, 0.5, dtype=float)
+        self.best_real = self.spec.denormalize(self.best_norm)
+        self.best_chain = self.spec.vector_to_chain(self.best_real)
         self.history = []
 
     @property
@@ -207,48 +191,74 @@ class Tracker:
     def __call__(self, x_norm):
         if self.exhausted:
             return PENALTY
-        x_norm = np.asarray(x_norm, dtype=float)
+        x_norm = np.clip(np.asarray(x_norm, dtype=float), 0.0, 1.0)
         try:
             real_params = self.spec.denormalize(x_norm)
             chain_dict = self.spec.vector_to_chain(real_params)
             loss = float(self.objective_fn(chain_dict))
             if not np.isfinite(loss):
+                if self.strict:
+                    raise ValueError(f"Objective returned non-finite loss: {loss}")
                 loss = PENALTY
         except Exception as e:
-            raise RuntimeError(f"렌더링 또는 평가 실패: {e}") from e
+            if self.strict:
+                raise
+            print(f"[WARN] 렌더링/평가 실패 -> penalty: {e}")
+            loss = PENALTY
 
         self.n += 1
         if loss < self.best_loss:
             self.best_loss = loss
-            self.best_norm = np.clip(x_norm.copy(), 0.0, 1.0)
+            self.best_norm = x_norm.copy()
+            self.best_real = real_params
+            self.best_chain = chain_dict
         self.history.append(self.best_loss)
         return loss
 
     def best_result(self):
-        best_real = self.spec.denormalize(self.best_norm)
-        best_chain = self.spec.vector_to_chain(best_real)
         h = list(self.history)
         if not h:
             h = [PENALTY] * self.budget
         elif len(h) < self.budget:
             h += [h[-1]] * (self.budget - len(h))
-        return best_chain, best_real, self.best_loss, np.array(h[:self.budget])
+        return self.best_chain, self.best_real, self.best_loss, np.array(h[:self.budget])
 
 
-def run_cma_es_for_chain(objective_fn, spec: ChainParameterSpec, budget=40, seed=0,
-                         n_runs=2, sigma0=0.2, popsize=6, initial_values=None, x0_norm=None):
+def run_cma_es_for_chain(
+    objective_fn,
+    spec: ChainParameterSpec,
+    budget=40,
+    seed=0,
+    n_runs=2,
+    sigma0=0.25,
+    popsize=None,
+    initial_values=None,
+    evaluate_initial=True,
+    strict=False,
+):
+    if not isinstance(budget, int) or budget < 1 or not isinstance(n_runs, int) or n_runs < 1:
+        raise ValueError("budget and n_runs must be positive integers")
+
+    init_norm = None
+    if initial_values is not None:
+        init_norm = spec.normalize(initial_values)
+
     rng = np.random.default_rng(seed)
-    tr = Tracker(objective_fn, spec, budget)
+    tr = Tracker(objective_fn, spec, budget, strict=strict)
 
     if spec.dim == 0:
         tr(np.array([]))
         return tr.best_result()
 
     if spec.dim == 1:
-        for g in np.linspace(0.0, 1.0, budget):
-            if tr.exhausted:
-                break
-            tr(np.array([g]))
+        if evaluate_initial and init_norm is not None:
+            tr(init_norm)
+        rem_grid = budget - tr.n
+        if rem_grid > 0:
+            for g in np.linspace(0.0, 1.0, rem_grid):
+                if tr.exhausted:
+                    break
+                tr(np.array([g]))
         return tr.best_result()
 
     pop = popsize or max(6, 4 + int(3 * np.log(spec.dim)))
@@ -260,31 +270,32 @@ def run_cma_es_for_chain(objective_fn, spec: ChainParameterSpec, budget=40, seed
         if tr.exhausted or sub_budget <= 0:
             break
 
-        if run_idx == 0 and x0_norm is not None:
-            x0 = np.clip(np.asarray(x0_norm, dtype=float), 1e-6, 1.0 - 1e-6)
-        elif run_idx == 0 and initial_values is not None:
-            x0 = np.clip(spec.normalize(initial_values), 1e-6, 1.0 - 1e-6)
+        if run_idx == 0 and init_norm is not None:
+            x0 = init_norm
         elif run_idx == 0:
             x0 = np.full(spec.dim, 0.5)
         else:
             x0 = rng.uniform(0.1, 0.9, spec.dim)
 
-        tr(x0)
-        if tr.exhausted or sub_budget <= 1:
-            continue
+        evals_in_run = 0
+        if run_idx == 0 and evaluate_initial:
+            tr(x0)
+            evals_in_run += 1
+            if tr.exhausted or evals_in_run >= sub_budget:
+                continue
 
+        x0_cma = np.clip(x0, 1e-6, 1.0 - 1e-6).tolist()
         opts = {
             "bounds": [0.0, 1.0],
             "popsize": pop,
-            "maxfevals": sub_budget - 1,
+            "maxfevals": max(1, sub_budget - evals_in_run),
             "seed": int(seed + 1000 * run_idx + 1),
             "verbose": -9,
             "verb_log": 0,
             "tolfun": 1e-12,
             "tolx": 1e-12,
         }
-        es = cma.CMAEvolutionStrategy(x0.tolist(), sigma0, opts)
-        evals_in_run = 1
+        es = cma.CMAEvolutionStrategy(x0_cma, sigma0, opts)
 
         while not es.stop() and not tr.exhausted and evals_in_run < sub_budget:
             xs = es.ask()
@@ -301,35 +312,61 @@ def run_cma_es_for_chain(objective_fn, spec: ChainParameterSpec, budget=40, seed
 
 
 # ----------------------------------------------------------------------
-# [4] 후보 체인별 CMA-ES 탐색 및 유사도순 정렬
+# [4] 다중 후보 체인 탐색 및 유사도순 정렬 (estimation/refine.py 완벽 호환)
 # ----------------------------------------------------------------------
 def search_and_rank_chains(
     dry_audio,
     sr,
     target_audio,
-    candidate_configs=None,
-    top_k_candidates=None,
+    candidate_chains=None,
     owned_effect_types=None,
     effects_def=None,
     budget=40,
     n_restarts=2,
     n_seeds=1,
     metric_fn=spectral_distance,
+    initial_guesses=None,
+    render_fn=None,
+    evaluate_initial=True,
+    parameter_round_digits=4,
+    strict=False,
+    base_seed=0,
+    verbose=True,
 ):
     effects_def = effects_def or load_effects()
-    candidates = candidate_configs if candidate_configs is not None else top_k_candidates
-    if candidates is None:
-        raise ValueError("candidate_configs 또는 top_k_candidates를 전달해야 합니다.")
+    renderer = render_fn if render_fn is not None else (
+        lambda audio, rate, ch: render_chain(audio, rate, ch, effects=effects_def)
+    )
+
+    if (
+        candidate_chains
+        and isinstance(candidate_chains[0], dict)
+        and "effect_type" in candidate_chains[0]
+        and "x0" in candidate_chains[0]
+        and initial_guesses is None
+    ):
+        try:
+            from estimation.refine import to_search_inputs
+            candidate_chains, initial_guesses = to_search_inputs(candidate_chains, effects_def)
+        except Exception:
+            initial_guesses = {}
+            converted = []
+            for item in candidate_chains:
+                ch = item.get("chain", {"amp_id": "fixed_amp_v1", "chain": []})
+                etypes_key = tuple(extract_effect_types(ch))
+                converted.append(ch)
+                initial_guesses[etypes_key] = ch
+            candidate_chains = converted
 
     # 1. 인벤토리 필터링
     if owned_effect_types is not None:
-        valid_candidates, dropped = filter_candidates_by_inventory(candidates, owned_effect_types)
+        valid_candidates, dropped = filter_candidates_by_inventory(candidate_chains, owned_effect_types)
     else:
-        valid_candidates = list(candidates)
+        valid_candidates = list(candidate_chains)
         dropped = []
 
     def objective_fn(chain_dict):
-        wet = render_chain(dry_audio, sr, chain_dict, effects=effects_def)
+        wet = renderer(dry_audio, sr, chain_dict)
         return metric_fn(wet, target_audio)
 
     ranked_results = []
@@ -337,43 +374,51 @@ def search_and_rank_chains(
 
     for cand in valid_candidates:
         etypes = extract_effect_types(cand)
+        etypes_tuple = tuple(etypes)
+        amp_id = cand.get("amp_id", "fixed_amp_v1") if isinstance(cand, dict) else "fixed_amp_v1"
+        spec = ChainParameterSpec(
+            etypes,
+            effects_def=effects_def,
+            amp_id=amp_id,
+            round_digits=parameter_round_digits,
+        )
+
+        init_vec = None
+        if initial_guesses and etypes_tuple in initial_guesses and spec.dim > 0:
+            guess = initial_guesses[etypes_tuple]
+            init_vec = (
+                spec.chain_to_vector(guess)
+                if isinstance(guess, (dict, list))
+                else np.asarray(guess, dtype=float)
+            )
+        elif isinstance(cand, dict) and "chain" in cand and spec.dim > 0:
+            try:
+                init_vec = spec.chain_to_vector(cand)
+            except Exception:
+                if strict:
+                    raise
+                init_vec = None
+
         label = format_chain_label(etypes)
-        spec = ChainParameterSpec(etypes, effects_def=effects_def)
+        if verbose:
+            warm_str = " (Warm-start 적용)" if init_vec is not None else ""
+            print(f"[Search] 후보 탐색 시작: {label:<30} | 차원: {spec.dim} | 예산: {budget}회{warm_str}")
 
-        x0_norm = None
-        init_real = None
-        model_score = None
-        if isinstance(cand, dict):
-            model_score = cand.get("model_score", cand.get("score"))
-            if cand.get("x0") is not None and len(cand["x0"]) == spec.dim and spec.dim > 0:
-                x0_norm = np.array(cand["x0"], dtype=float)
-            elif "initial_chain" in cand:
-                try:
-                    init_real = spec.chain_to_vector(cand["initial_chain"])
-                except Exception:
-                    pass
-            elif "chain" in cand and isinstance(cand["chain"], dict) and spec.dim > 0:
-                try:
-                    init_real = spec.chain_to_vector(cand["chain"])
-                except Exception:
-                    pass
-
-        warm_tag = " (Warm-start 적용)" if (x0_norm is not None or init_real is not None) else ""
-        print(f"[Search] 후보 탐색 시작: {label:<30} | 차원: {spec.dim} | 예산: {budget}회{warm_tag}")
         start_cand = time.perf_counter()
-
         best_overall = None
         seed_losses = []
 
-        for seed in range(n_seeds):
+        for s_idx in range(n_seeds):
+            seed_val = base_seed + s_idx
             best_chain, best_vec, best_loss, hist = run_cma_es_for_chain(
                 objective_fn,
                 spec,
                 budget=budget,
-                seed=seed,
+                seed=seed_val,
                 n_runs=n_restarts,
-                initial_values=init_real if seed == 0 else None,
-                x0_norm=x0_norm if seed == 0 else None,
+                initial_values=init_vec if s_idx == 0 else None,
+                evaluate_initial=evaluate_initial,
+                strict=strict,
             )
             seed_losses.append(best_loss)
             if best_overall is None or best_loss < best_overall["loss"]:
@@ -382,15 +427,15 @@ def search_and_rank_chains(
                     "chain": best_chain,
                     "best_vector": best_vec,
                     "loss": float(best_loss),
-                    "model_score": model_score,
                     "spec": spec,
                     "history": hist,
                 }
 
         elapsed_cand = time.perf_counter() - start_cand
-        eval_count = max(1, budget * n_seeds if spec.dim > 0 else 1)
-        print(f"  -> 완료: Loss={best_overall['loss']:.6f} | 소요 시간: {elapsed_cand:.2f}초 "
-              f"(1회당 평균 {elapsed_cand / eval_count:.3f}초)")
+        if verbose:
+            eval_cnt = max(1, budget * n_seeds if spec.dim > 0 else 1)
+            print(f"  -> 완료: Loss={best_overall['loss']:.6f} | 소요 시간: {elapsed_cand:.2f}초 "
+                  f"(1회당 평균 {elapsed_cand / eval_cnt:.3f}초)")
 
         best_overall["loss_mean"] = float(np.mean(seed_losses))
         best_overall["loss_std"] = float(np.std(seed_losses))
@@ -398,7 +443,8 @@ def search_and_rank_chains(
         ranked_results.append(best_overall)
 
     total_elapsed = time.perf_counter() - start_total
-    print(f"\n[INFO] VST 탐색 총 소요 시간: {total_elapsed:.2f}초 (후보 {len(valid_candidates)}개 완료)")
+    if verbose:
+        print(f"\n[INFO] 탐색 총 소요 시간: {total_elapsed:.2f}초 (후보 {len(valid_candidates)}개 완료)")
 
     ranked_results.sort(key=lambda r: r["loss"])
     for rank_idx, item in enumerate(ranked_results, start=1):
@@ -408,27 +454,19 @@ def search_and_rank_chains(
 
 
 # ----------------------------------------------------------------------
-# [5] 생성 폴더의 dry/ 로드 (원본 dry 자동 대체 제거) 및 결과 리포트
+# [5] 생성 폴더의 dry/ 로드 및 결과 리포트 출력
 # ----------------------------------------------------------------------
 def load_generated_dry_sample(dataset_dir=None, duration_sec=1.0):
-    """
-    생성 데이터셋 폴더(--dataset) 안의 dry/ 음원을 로드합니다.
-    (원본 data/dry/로 임의 대체하면 정답 wet과 음량 기준이 달라지므로 생성 폴더의 dry/만 탐색)
-    """
     ds_path = Path(dataset_dir) if dataset_dir else DEFAULT_DATASET_DIR
-
     search_roots = [ds_path]
-    if not ds_path.exists():
-        # 상위 data/synthetic 아래에 다른 생성 폴더가 있는지 함께 확인
-        synth_root = PROJECT_ROOT / "data" / "synthetic"
-        if synth_root.exists():
-            search_roots.append(synth_root)
+    synth_root = PROJECT_ROOT / "data" / "synthetic"
+    if synth_root.exists() and synth_root not in search_roots:
+        search_roots.append(synth_root)
 
     wav_files = []
     for root in search_roots:
         if not root.exists():
             continue
-        # 1) manifest.json의 render_input 확인
         for mf in sorted(root.glob("**/manifest.json")):
             try:
                 with open(mf, encoding="utf-8") as f:
@@ -442,7 +480,6 @@ def load_generated_dry_sample(dataset_dir=None, duration_sec=1.0):
                             wav_files.append(p)
             except Exception:
                 pass
-        # 2) dry/*.wav 직접 탐색
         if not wav_files:
             if root.name == "dry":
                 wav_files.extend(sorted(root.glob("*.wav")))
@@ -454,10 +491,8 @@ def load_generated_dry_sample(dataset_dir=None, duration_sec=1.0):
 
     if not wav_files:
         raise FileNotFoundError(
-            f"\n[ERROR] 생성 폴더의 dry/ 음원을 찾을 수 없습니다! (확인한 경로: {ds_path / 'dry'})\n"
-            "해결 방법:\n"
-            "  1) 공유 드라이브의 'step1_vst_v0_임시' 폴더를 data/synthetic/ 아래에 다운로드하거나,\n"
-            "  2) python -m search.pipeline --dataset <생성폴더경로> 형태로 실행해 주세요."
+            f"\n[ERROR] 생성 폴더의 dry/ 음원을 찾을 수 없습니다! (확인 경로: {ds_path / 'dry'})\n"
+            "공유 드라이브의 생성 데이터셋(step1_vst_v0_임시 등)을 다운로드하거나 --dataset 경로를 지정해 주세요."
         )
 
     path = wav_files[0]
@@ -484,7 +519,7 @@ def format_chain_label(effect_types):
 def print_ranking_report(ranked_results, dropped, owned_effect_types, ground_truth_chain=None):
     width = 104
     print("\n" + "=" * width)
-    print("[Step 1 탐색 엔진] VST 후보 체인 탐색 및 유사도순 정렬 리포트")
+    print("[Step 1 탐색 엔진] 후보 체인별 CMA-ES 탐색 및 유사도순 정렬 리포트")
     print("-" * width)
     print(f"보유 이펙터 (user_inventory): {owned_effect_types}")
     if dropped:
@@ -532,12 +567,12 @@ def print_ranking_report(ranked_results, dropped, owned_effect_types, ground_tru
 # ----------------------------------------------------------------------
 # [6] 메인 파이프라인 실행 (기본 VST 이펙터 808_scream 기준)
 # ----------------------------------------------------------------------
-DEFAULT_VST_CANDIDATES = [
-    {"effect_types": ["808_scream"]},
-    {"effect_types": ["b_drive"]},
-    {"effect_types": ["compressor", "808_scream"]},
-    {"effect_types": ["808_scream", "eq_3band"]},
-    {"effect_types": ["compressor", "808_scream", "eq_3band"]},
+DEFAULT_CANDIDATE_CHAINS = [
+    ["808_scream"],
+    ["b_drive"],
+    ["compressor", "808_scream"],
+    ["808_scream", "eq_3band"],
+    ["compressor", "808_scream", "eq_3band"],
 ]
 
 
@@ -546,7 +581,6 @@ def run_search_pipeline(budget=40, n_restarts=2, n_seeds=1, dataset_path=None, i
     dry_audio, sr, _ = load_generated_dry_sample(dataset_dir=dataset_path)
     owned_effects = inventory_override if inventory_override is not None else load_user_inventory()
 
-    # 피드백 4번 반영: 정답 체인을 VST 이펙터(808_scream, 노브 3개 level·overdrive·tone)로 설정
     ground_truth_chain = {
         "amp_id": "fixed_amp_v1",
         "chain": [
@@ -568,7 +602,7 @@ def run_search_pipeline(budget=40, n_restarts=2, n_seeds=1, dataset_path=None, i
         dry_audio=dry_audio,
         sr=sr,
         target_audio=target_audio,
-        candidate_configs=DEFAULT_VST_CANDIDATES,
+        candidate_chains=DEFAULT_CANDIDATE_CHAINS,
         owned_effect_types=owned_effects,
         effects_def=effects_def,
         budget=budget,
@@ -589,9 +623,9 @@ def run_search_pipeline(budget=40, n_restarts=2, n_seeds=1, dataset_path=None, i
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Step 1: VST Multi-Chain CMA-ES Search & Ranking")
+    p = argparse.ArgumentParser(description="Step 1: Schema-based Multi-Chain CMA-ES Search & Ranking")
     p.add_argument("--dataset", type=str, default=str(DEFAULT_DATASET_DIR),
-                   help="생성 데이터셋 폴더 경로 (내부에 dry/ 폴더 포함, 기본값: data/synthetic/step1_vst_v0_임시)")
+                   help="생성 데이터셋 폴더 경로 (내부에 dry/ 포함, 기본값: data/synthetic/step1_vst_v0_임시)")
     p.add_argument("--budget", type=int, default=40, help="후보 체인당 평가 횟수 예산 (기본값: 40)")
     p.add_argument("--restarts", type=int, default=2, help="CMA-ES 분할 재시작 횟수 (기본값: 2)")
     p.add_argument("--seeds", type=int, default=1, help="반복 시드 수")
