@@ -44,7 +44,8 @@ class EstimationTest(unittest.TestCase):
         for spec in item['vector_spec']:
             actual = changed['chain']['chain'][spec['effect_index']]['values'][spec['name']]
             self.assertAlmostEqual(normalize(actual,spec),.37)
-        self.assertEqual(item['chain']['chain'][0]['values']['level'],50)
+        level = next(p for p in self.definitions['808_scream']['params'] if p['name']=='level')
+        self.assertEqual(item['chain']['chain'][0]['values']['level'],level['default'])
 
     def test_inventory_top_k_and_single_stage_candidates(self):
         prediction = self.prediction()

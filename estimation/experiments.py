@@ -1,5 +1,6 @@
 """One VST7 experiment: import generated pairs, train, evaluate and export candidates."""
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
@@ -7,12 +8,25 @@ from .data import cache_native_dry, prepare, write_json
 from .evaluate import evaluate, renderer_status
 from .train import train
 
+DEFAULT_OUTPUT = 'outputs/step1_vst_v1'
 
-def run(dataset,output='outputs/vst7_drive_only',epochs=30,batch_size=16,threads=4,
+
+def check_cache_source(dataset, cache):
+    """기존 캐시가 다른 데이터(예: 볼륨 보정 전)로 만들어졌으면 재사용하지 않고 중단."""
+    metadata = json.loads((Path(cache)/'dataset.json').read_text(encoding='utf-8'))
+    current = hashlib.sha256((Path(dataset)/'manifest.json').read_bytes()).hexdigest()
+    if metadata.get('source_manifest_sha256') != current:
+        raise ValueError(f'{cache} was built from a different dataset manifest; '
+                         'use a new --output folder')
+
+
+def run(dataset,output=DEFAULT_OUTPUT,epochs=30,batch_size=16,threads=4,
         evaluate_only=False,render_samples=70):
     output = Path(output)
     cache = output/'dataset'
-    if not (cache/'dataset.json').exists():
+    if (cache/'dataset.json').exists():
+        check_cache_source(dataset, cache)
+    else:
         if evaluate_only:
             raise FileNotFoundError('Prepare the dataset before evaluation')
         prepare(dataset,cache)
@@ -31,7 +45,7 @@ def run(dataset,output='outputs/vst7_drive_only',epochs=30,batch_size=16,threads
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dataset',required=True)
-    parser.add_argument('--output',default='outputs/vst7_drive_only')
+    parser.add_argument('--output',default=DEFAULT_OUTPUT)
     parser.add_argument('--epochs',type=int,default=30)
     parser.add_argument('--batch-size',type=int,default=16)
     parser.add_argument('--threads',type=int,default=4)

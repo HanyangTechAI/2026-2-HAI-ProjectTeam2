@@ -76,18 +76,18 @@ CMA-ES adapter에서는 잘못된 출력을 거리로 사용하지 않고 오류
 ```powershell
 # 생성된 VST 전용 데이터로 캐시 → 30epoch 학습 → validation/test 평가
 .\.conda-cnn\python.exe -u -m estimation.experiments `
-  --dataset data/synthetic/vst7_drive_only --output outputs/vst7_drive_only --epochs 30
+  --dataset data/synthetic/step1_vst_v1 --output outputs/step1_vst_v1 --epochs 30
 
 # best 모델의 평가만 다시 수행
 .\.conda-cnn\python.exe -m estimation.experiments `
-  --dataset data/synthetic/vst7_drive_only --output outputs/vst7_drive_only `
+  --dataset data/synthetic/step1_vst_v1 --output outputs/step1_vst_v1 `
   --evaluate-only --render-samples 70
 
 # 단일 파일 Top-3 후보 출력
 .\.conda-cnn\python.exe -m estimation.infer `
-  --checkpoint outputs/vst7_drive_only/model/best.pt `
+  --checkpoint outputs/step1_vst_v1/model/best.pt `
   --dry '<생성 폴더>/dry/<파일>.wav' --reference '<목표>.wav' `
-  --k 3 --output outputs/vst7_drive_only/prediction.json
+  --k 3 --output outputs/step1_vst_v1/prediction.json
 ```
 
 데이터 재생성은 팀 `scripts/generate_step1_dataset.py`를 사용한다.
@@ -103,7 +103,7 @@ CNN은 드라이브별 확률과 노브 초기값을 예측한다. 후보 하나
 후보에는 `effect_type`, `model_score`, 공통 체인 형식의 `chain`, 0~1 정규화 노브 `x0`,
 좌표 순서·범위·정규화 방식이 담긴 `vector_spec`이 포함된다.
 `refine.to_search_inputs`가 후보와 좌표를 검사하고 main의
-`search_and_rank_chains(candidate_configs=...)`가 받을 수 있는 형식으로 반환한다.
+`search_and_rank_chains(candidate_chains=...)`가 받을 수 있는 형식으로 반환한다.
 평가 adapter는 `run_cma_es_for_chain(..., x0_norm=...)`을 호출한다.
 노브 정밀도를 보존하는 spec은 estimation 안에서 확장하며 main 탐색 파일은 수정하지 않는다.
 
@@ -114,16 +114,16 @@ seed·예산·실행 수·목적함수 d는 동일하다. 종류 후보는 고�
 ```powershell
 # 플러그인 없이 후보와 실행 계획 준비
 .\.conda-cnn\python.exe -m estimation.cma_experiment --prepare-only `
-  --output outputs/vst7_drive_only/cma_validation_new
+  --output outputs/step1_vst_v1/cma_validation_new
 
 # validation 종류별 1개, CNN Top-3 후보로 비교
 .\.conda-cnn\python.exe -u -m estimation.cma_experiment `
   --split validation --samples 7 --k 3 --budget 180 --restarts 2 --seed 42 `
-  --output outputs/vst7_drive_only/cma_validation_new
+  --output outputs/step1_vst_v1/cma_validation_new
 ```
 
 `--split test`는 test 분할을 사용한다. 실행마다 새 `--output` 경로를 사용한다.
-기본 cache/checkpoint는 `outputs/vst7_drive_only/` 아래다.
+기본 cache/checkpoint는 `outputs/step1_vst_v1/` 아래다.
 `--budget`은 표본·방법당 K개 후보가 나누는 총 렌더 예산이다.
 `--restarts 2`는 main의 `n_runs=2`, 즉 초기 실행과 재시작을 합해 2회다.
 표본 7개·방법 2개·예산 180이면 탐색 상한은 2,520회이며 활성/정답 진단 14회가 별도다.

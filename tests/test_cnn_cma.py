@@ -111,7 +111,7 @@ class CnnCmaTest(unittest.TestCase):
         x = (.1*np.sin(np.arange(4800)*.1)).astype('float32')
         candidate = {'effect_type':'808_scream','model_score':.9,'x0':[.5],
                      'chain':{'amp_id':'fixed_amp_v1','chain':[{'effect_type':'808_scream','values':{'level':0}}]}}
-        rows,dropped = search_and_rank_chains(x,8000,x,candidate_configs=[candidate],
+        rows,dropped = search_and_rank_chains(x,8000,x,candidate_chains=[candidate],
                                              effects_def=effects,budget=6,n_restarts=1)
         self.assertFalse(dropped)
         self.assertEqual(rows[0]['effect_types'],['808_scream'])

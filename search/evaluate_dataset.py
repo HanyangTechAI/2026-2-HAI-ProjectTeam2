@@ -39,8 +39,12 @@ def is_vst_available(class_name="MultiDrivePro"):
 class CnnPredictor:
     """5번(도영님) CNN: 생성 dry + 목표 wet을 함께 넣어 7종 확률과 노브 초기값을 예측합니다."""
     def __init__(self, checkpoint_path):
+        from estimation.chain import fingerprint
         from estimation.infer import load_predictor  # torch 필요 (.conda-cnn 환경)
         self.model, self.config, self.state = load_predictor(checkpoint_path)
+        if self.state["catalog_hash"] != fingerprint(catalog()):
+            raise ValueError("CNN이 학습된 노브 범위와 현재 schemas/effects.data.json이 다릅니다. "
+                             "현재 스키마로 만든 데이터로 CNN을 다시 학습하세요.")
 
     def __call__(self, dry_path, wet_path, sr):
         from estimation.audio import read_audio, segment
