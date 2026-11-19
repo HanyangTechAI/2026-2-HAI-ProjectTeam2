@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from .chain import AUXILIARY, DRIVES
+from .chain import DRIVES
 from .cnn import PairCNN, supervised_loss
 from .data import PairDataset, write_json
 
@@ -22,8 +22,8 @@ def device_batch(batch, device):
 def run_epoch(model, loader, optimizer=None, distance_weight=.1):
     training = optimizer is not None
     model.train(training)
-    stats = {'loss':0., 'classification':0., 'presence':0., 'knobs':0.,
-             'distance_auxiliary':0., 'correct':0, 'presence_correct':0,
+    stats = {'loss':0., 'classification':0., 'knobs':0.,
+             'distance_auxiliary':0., 'correct':0,
              'knob_abs':0., 'knob_count':0, 'd_abs':0., 'dry_target_d':0.}
     n = 0
     for batch in loader:
@@ -44,7 +44,6 @@ def run_epoch(model, loader, optimizer=None, distance_weight=.1):
         for key,value in components.items():
             stats[key] += float(value.detach())*count
         stats['correct'] += int((output['logits'].argmax(1)==batch['label']).sum())
-        stats['presence_correct'] += int(((output['presence']>=0)==batch['presence'].bool()).sum())
         for t, values in output['knobs'].items():
             mask = batch['active'][t].bool()
             stats['knob_abs'] += float((values[mask].detach()-batch['knobs'][t][mask]).abs().sum())
@@ -53,8 +52,8 @@ def run_epoch(model, loader, optimizer=None, distance_weight=.1):
         predicted_d, target_d = output['distance'].mean(1), batch['distance'].mean(1)
         stats['d_abs'] += float((predicted_d.detach()-target_d).abs().sum())
         stats['dry_target_d'] += float(target_d.sum())
-    return {**{k:stats[k]/n for k in ('loss','classification','presence','knobs','distance_auxiliary')},
-            'accuracy':stats['correct']/n, 'presence_accuracy':stats['presence_correct']/(2*n),
+    return {**{k:stats[k]/n for k in ('loss','classification','knobs','distance_auxiliary')},
+            'accuracy':stats['correct']/n,
             'normalized_knob_mae':stats['knob_abs']/max(1,stats['knob_count']),
             'dry_target_d_estimate_mae':stats['d_abs']/n,
             'mean_measured_dry_target_d':stats['dry_target_d']/n}
@@ -102,7 +101,10 @@ def train(cache, output, epochs=30, batch_size=16, learning_rate=1e-3,
         scheduler.step()
         record['seconds'] = time.perf_counter()-start
         history.append(record)
-        checkpoint = {'format_version':2,'state_dict':model.state_dict(),'epoch':epoch,
+        checkpoint = {'format_version':3,'chain_policy':'single_vst_drive_only',
+                      'data_quality_policy':metadata['data_quality_policy'],
+                      'source_render_audit_sha256':metadata['source_render_audit_sha256'],
+                      'state_dict':model.state_dict(),'epoch':epoch,
                       'model_config':model.model_config,'catalog':metadata['catalog'],
                       'catalog_hash':metadata['catalog_hash'],'classes':list(DRIVES),
                       'audio_config':metadata['audio_config'],'distance_settings':metadata['distance_settings'],

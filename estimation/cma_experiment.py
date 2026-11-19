@@ -18,8 +18,8 @@ from .refine import default_candidates, refine_candidates, to_search_inputs
 from .renderer import activation_preflight as preflight
 
 
-def run(cache='outputs/vst7/dataset', checkpoint='outputs/vst7/model/best.pt',
-        output='outputs/vst7/cma_pilot', split='validation', samples=7, k=3,
+def run(cache='outputs/vst7_drive_only/dataset', checkpoint='outputs/vst7_drive_only/model/best.pt',
+        output='outputs/vst7_drive_only/cma_pilot', split='validation', samples=7, k=3,
         budget=180, restarts=2, seed=42, prepare_only=False, sample_id=None):
     torch.set_num_threads(4)
     from threadpoolctl import threadpool_limits
@@ -32,7 +32,7 @@ def run(cache='outputs/vst7/dataset', checkpoint='outputs/vst7/model/best.pt',
     rows, metadata = load_manifest(cache)
     model, config, state = load_predictor(checkpoint)
     if any(state[key] != metadata[key] for key in
-           ('source_manifest_sha256', 'catalog_hash', 'audio_config', 'distance_settings')):
+           ('source_manifest_sha256', 'source_render_audit_sha256', 'catalog_hash', 'audio_config', 'distance_settings')):
         raise ValueError('Checkpoint and cache provenance/preprocessing/distance settings disagree')
     split_rows = [r for r in rows if r['split'] == split]
     if sample_id:
@@ -59,27 +59,26 @@ def run(cache='outputs/vst7/dataset', checkpoint='outputs/vst7/model/best.pt',
             b = torch.from_numpy(wet_features[row['wet_index']].copy())[None]
             prediction = decode(model(a,b), 0, model.definitions, state['distance_settings'])
             candidates = make_candidates(prediction, k=k, definitions=model.definitions)
-            chains, guesses = to_search_inputs(candidates, model.definitions)
+            search_inputs = to_search_inputs(candidates, model.definitions)
             tasks.append({'sample_id': row['sample_id'], 'recording_id': row['recording_id'],
                           'dry_sample_id': row['dry_sample_id'], 'wet_index': row['wet_index'],
                           'source': sources[row['dry_sample_id']],
                           'ground_truth_chain': row['ground_truth_chain'],
                           'truth_drive': row['drive'], 'prediction': prediction,
-                          'candidates': candidates, 'search_candidate_chains': chains,
-                          'search_initial_guesses': [{'effect_types': list(key), 'chain': value}
-                                                     for key, value in guesses.items()]})
+                          'candidates': candidates, 'search_candidate_configs': search_inputs})
     plan = {'format_version': 1, 'status': 'prepared', 'split': split, 'sample_count': len(tasks),
             'sample_policy': policy, 'samples_by_drive': {d: sum(t['truth_drive']==d for t in tasks) for d in DRIVES},
             'originals': len({t['recording_id'] for t in tasks}),
             'checkpoint': str(checkpoint.resolve()), 'checkpoint_epoch': state['epoch'],
             'checkpoint_sha256': hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
             'source_manifest_sha256': state['source_manifest_sha256'], 'catalog_hash': state['catalog_hash'],
+            'source_render_audit_sha256':state['source_render_audit_sha256'],
             'audio_config': state['audio_config'], 'distance_settings': state['distance_settings'],
             'k': k, 'budget_per_method_per_sample': budget, 'restarts': restarts, 'seed': seed,
             'input_policy': metadata['input_policy'],
-            'search_engine': 'search.pipeline.search_and_rank_chains/run_cma_es_for_chain',
+            'search_engine': 'search.pipeline.run_cma_es_for_chain (main x0_norm API)',
             'comparison': 'same CNN structures, budgets and seeds; CNN knobs versus schema default knobs',
-            'structure_policy': 'Compressor/EQ presence and drive identities fixed per CNN candidate; CMA-ES changes knobs only',
+            'structure_policy': 'one VST drive per candidate; no compressor/EQ; CMA-ES changes drive knobs only',
             'evaluation_policy': 'initial seeds included in budget and best result; ground truth used for post-search reporting only',
             'max_search_renders': len(tasks)*2*budget,
             'additional_diagnostic_renders': 7+len(tasks),
@@ -162,9 +161,9 @@ def run(cache='outputs/vst7/dataset', checkpoint='outputs/vst7/model/best.pt',
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--cache', default='outputs/vst7/dataset')
-    parser.add_argument('--checkpoint', default='outputs/vst7/model/best.pt')
-    parser.add_argument('--output', default='outputs/vst7/cma_pilot')
+    parser.add_argument('--cache', default='outputs/vst7_drive_only/dataset')
+    parser.add_argument('--checkpoint', default='outputs/vst7_drive_only/model/best.pt')
+    parser.add_argument('--output', default='outputs/vst7_drive_only/cma_pilot')
     parser.add_argument('--split', choices=['validation','test'], default='validation')
     parser.add_argument('--samples', type=int, default=7, help='Multiple of 7; -1 for all')
     parser.add_argument('--sample-id', help='One explicit smoke sample; overrides balanced sampling')

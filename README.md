@@ -48,7 +48,8 @@ python schemas/validate.py
 현재 스키마 기반 드라이브 렌더러, Step 0 탐색 실험과 CNN 초기 추정 파이프라인을 제공합니다.
 
 현재 CNN은 생성 폴더의 peak −12 dBFS `dry/`를 입력으로 VST 7종 중 하나와
-선택적 컴프·EQ의 사용 여부·노브 초기값을 함께 예측합니다. 앰프는 렌더링하지 않습니다.
+해당 드라이브의 노브 초기값을 예측합니다. 컴프·EQ는 사용하지 않으며,
+CNN·VST·거리 계산은 44.1 kHz로 통일했습니다. 앰프는 렌더링하지 않습니다.
 스펙트럼·다이내믹스 복합 거리 `d`로 실제 렌더링 결과를 비교하는 CNN 실험은
 [estimation/EXPERIMENTS.md](estimation/EXPERIMENTS.md)를 참고하세요.
 

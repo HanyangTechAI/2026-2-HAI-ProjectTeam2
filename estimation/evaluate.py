@@ -10,7 +10,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from .audio import AudioConfig, segment
-from .chain import AUXILIARY, DRIVES, continuous, make_candidates, normalize
+from .chain import DRIVES, continuous, make_candidates, normalize
 from .data import PairDataset, load_manifest, write_json
 from .distance import compare
 from .infer import decode, load_predictor
@@ -40,11 +40,21 @@ class AudioEvaluation:
         self.dry = np.load(self.cache/'dry_audio.npy',mmap_mode='r')
         self.sources = {r['dry_sample_id']:r for r in self.metadata['dry_sources']}
         self.renderer = Renderer(self.metadata['catalog'])
+        self.render_attempts = 0
+        self.transient_retries = 0
 
     def render(self,row,chain):
         source = self.sources[row['dry_sample_id']]
         native = np.load(self.cache/'native_dry'/f"{row['dry_sample_id']}.npy")
-        rendered = self.renderer(native,source['source_rate'],chain)
+        for attempt in range(3):
+            self.render_attempts += 1
+            try:
+                rendered = self.renderer(native,source['source_rate'],chain)
+                break
+            except ValueError as error:
+                if attempt==2 or not any(t in str(error) for t in ('pass-through','Silent VST')):
+                    raise
+                self.transient_retries += 1
         if rendered.ndim==2:
             rendered = rendered.mean(0)
         if source['source_rate']!=self.config.sample_rate:
@@ -68,7 +78,8 @@ def renderer_status(cache,refresh=False):
             row = next(r for r in evaluator.rows if r['drive']==effect and r['split']=='train')
             actual = evaluator.render(row,row['ground_truth_chain'])
             target = evaluator.target[row['wet_index']]
-            relative = float(np.linalg.norm(actual-target)/max(float(np.linalg.norm(target)),1e-12))
+            relative = float(np.sqrt(np.sum((actual-target).astype('float64')**2)/
+                                    max(float(np.sum(target.astype('float64')**2)),1e-30)))
             score = compare(actual,target,evaluator.config.sample_rate,evaluator.metadata['distance_settings'])
             checks.append({'drive':effect,'sample_id':row['sample_id'],
                            'relative_rms_error':relative,'oracle_d':score})
@@ -131,7 +142,9 @@ def render_validation_probe(model,cache,limit=14):
                             'recording_id':row['recording_id'],
                             'oracle_d':evaluator.score(row,row['ground_truth_chain'])['combined'],
                             'same_predicted_structure_default_knobs_d':evaluator.score(row,baseline)['combined']})
+    dataset.close()
     return {'available':True,'samples':len(records),
+            'transient_render_retries':evaluator.transient_retries,
             'mean_cnn_d':float(np.mean([r['cnn_d'] for r in records])),
             'mean_oracle_d':float(np.mean([r['oracle_d'] for r in records])),
             'mean_same_predicted_structure_default_knobs_d':float(np.mean([r['same_predicted_structure_default_knobs_d'] for r in records])),
@@ -168,6 +181,7 @@ def evaluate(cache,checkpoint,output,split='test',batch_size=16,render_samples=7
     dataset = PairDataset(cache,split)
     selected_for_render = render_subset(dataset.rows,render_samples)
     if (state['source_manifest_sha256']!=dataset.metadata['source_manifest_sha256'] or
+            state.get('source_render_audit_sha256')!=dataset.metadata['source_render_audit_sha256'] or
             state['catalog_hash']!=dataset.metadata['catalog_hash'] or
             state['audio_config']!=dataset.metadata['audio_config']):
         raise ValueError('Checkpoint belongs to another source dataset')
@@ -178,7 +192,6 @@ def evaluate(cache,checkpoint,output,split='test',batch_size=16,render_samples=7
     records,offset = [],0
     knob_errors = {t:[] for t in model.definitions}
     default_knob_errors = {t:[] for t in model.definitions}
-    presence_correct = {t:0 for t in AUXILIARY}
     with torch.inference_mode():
         for batch in DataLoader(dataset,batch_size=batch_size,shuffle=False):
             result = model(batch['dry'],batch['wet'])
@@ -187,8 +200,6 @@ def evaluate(cache,checkpoint,output,split='test',batch_size=16,render_samples=7
                 prediction = decode(result,i,model.definitions,state['distance_settings'])
                 candidates = make_candidates(prediction,k=3,definitions=model.definitions)
                 truth_items = {p['effect_type']:p['values'] for p in row['ground_truth_chain']['chain']}
-                for t in AUXILIARY:
-                    presence_correct[t] += int((prediction['presence'][t]>=.5)==(t in truth_items))
                 for t,values in truth_items.items():
                     for p in continuous(model.definitions[t]):
                         knob_errors[t].append(abs(normalize(prediction['values'][t][p['name']],p)-normalize(values[p['name']],p)))
@@ -199,8 +210,7 @@ def evaluate(cache,checkpoint,output,split='test',batch_size=16,render_samples=7
                 item = {'sample_id':row['sample_id'],'recording_id':row['recording_id'],'dry_path':row['dry_path'],
                         'truth':row['drive'],'predicted':candidates[0]['effect_type'],
                         'ground_truth_chain':row['ground_truth_chain'], 'prediction':prediction,
-                        'exact_structure_correct':candidates[0]['effect_type']==row['drive'] and
-                            all((prediction['presence'][t]>=.5)==(t in truth_items) for t in AUXILIARY),
+                        'exact_structure_correct':candidates[0]['effect_type']==row['drive'],
                         'candidates':candidates,'measured_dry_target_d':true_d,
                         'rendered_distances':None}
                 if evaluator and row['sample_id'] in selected_for_render:
@@ -223,7 +233,6 @@ def evaluate(cache,checkpoint,output,split='test',batch_size=16,render_samples=7
     summary.update(split=split,samples=len(records),checkpoint_epoch=state['epoch'],
                    original_recordings=len({r['recording_id'] for r in dataset.rows}),
                    top3_accuracy=float(np.mean([r['truth'] in [c['effect_type'] for c in r['candidates']] for r in records])),
-                   presence_accuracy={t:v/len(records) for t,v in presence_correct.items()},
                    conditional_normalized_knob_mae={t:float(np.mean(v)) if v else None for t,v in knob_errors.items()},
                    conditional_default_normalized_knob_mae={t:float(np.mean(v)) if v else None for t,v in default_knob_errors.items()},
                    exact_structure_accuracy=float(np.mean([r['exact_structure_correct'] for r in records])),
@@ -231,6 +240,8 @@ def evaluate(cache,checkpoint,output,split='test',batch_size=16,render_samples=7
                    dry_target_d_estimate_mae=float(np.mean([abs(r['prediction']['dry_target_distance_estimate']['combined']-r['measured_dry_target_d']) for r in records])),
                    distance_settings=state['distance_settings'],renderer=status,
                    rendered_samples=len(rendered_records),
+                   transient_render_retries=evaluator.transient_retries if evaluator else 0,
+                   render_attempts=evaluator.render_attempts if evaluator else 0,
                    rendered_original_recordings=len({r['recording_id'] for r in rendered_records}),
                    render_sample_policy='class-balanced round-robin originals; selected before predictions',
                    mean_rendered_distances=None)
@@ -245,6 +256,7 @@ def evaluate(cache,checkpoint,output,split='test',batch_size=16,render_samples=7
     output.mkdir(parents=True,exist_ok=True)
     (output/'samples.jsonl').write_text(''.join(json.dumps(r,ensure_ascii=False)+'\n' for r in records),encoding='utf-8')
     write_json(output/'summary.json',summary)
+    dataset.close()
     return summary
 
 

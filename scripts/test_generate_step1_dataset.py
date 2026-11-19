@@ -20,6 +20,20 @@ import soundfile as sf
 from effects import render_chain
 from schemas.validate import validate_chain
 from scripts import generate_step1_dataset as step1
+from effects.render import find_plugin
+
+# Pedalboard-only settings: rendering tests run on every PC (no VST plugin needed).
+PB_DRIVES = ("overdrive", "distortion", "fuzz")
+PB = step1.Config(effects=("compressor", *PB_DRIVES, "eq_3band"),
+                  policy=(step1.Stage(("compressor",), .5), step1.Stage(PB_DRIVES), step1.Stage(("eq_3band",), .5)))
+
+
+def has_plugin():
+    try:
+        find_plugin("MultiDrivePro")
+        return True
+    except FileNotFoundError:
+        return False
 
 
 class ChainTests(unittest.TestCase):
@@ -54,7 +68,7 @@ class ChainTests(unittest.TestCase):
 
     def test_default_policy_randomizes_all_drives_and_four_shapes(self):
         chains = [self.generator.chain("source", i)["chain"] for i in range(160)]
-        shapes = {tuple("drive" if x["effect_type"] in ("overdrive", "distortion", "fuzz")
+        shapes = {tuple("drive" if x["effect_type"] in step1.DRIVES
                         else x["effect_type"] for x in chain) for chain in chains}
         self.assertEqual(shapes, {("drive",), ("compressor", "drive"),
                                   ("drive", "eq_3band"), ("compressor", "drive", "eq_3band")})
@@ -76,10 +90,13 @@ class ChainTests(unittest.TestCase):
                     elif p["type"] == "categorical":
                         self.assertIn(value, p["options"])
 
-    def test_unrendered_fuzz_mode_is_fixed_and_warned(self):
-        g = self.make(0, 0, ("fuzz",))
-        self.assertTrue(any("fuzz.mode" in message for message in g.warnings))
-        self.assertEqual({g.chain("dry", i)["chain"][0]["values"]["mode"] for i in range(25)}, {"Vintage"})
+    def test_per_drive_fixes_drive_and_keeps_random_comp_eq(self):
+        g = step1.Generator(replace(step1.Config(), per_drive=True))
+        for drive in step1.DRIVES:
+            chains = [g.chain("a", i, drive)["chain"] for i in range(40)]
+            self.assertTrue(all([x["effect_type"] for x in c if x["effect_type"] in step1.DRIVES] == [drive]
+                                for c in chains))
+            self.assertEqual({len(c) for c in chains}, {1, 2, 3})
 
     def test_continuous_linear_sampling(self):
         param = {"type": "continuous", "range": [-12, 12]}
@@ -131,12 +148,17 @@ class ChainTests(unittest.TestCase):
         ] + [replace(step1.Config(), seed=value) for value in (True, 1.5, "42")]
         invalid += [replace(step1.Config(), effects=names) for names in
                     ((), ("missing",), ("fuzz", "fuzz"), ("compressor",))]
-        invalid += [replace(step1.Config(), source_dataset=""),
+        invalid += [replace(step1.Config(), per_drive=1), replace(step1.Config(), dry_peak_db=3.0),
+                    replace(step1.Config(), dry_peak_db=float("nan")),
+                    replace(step1.Config(), per_drive=True, policy=(step1.Stage(("compressor",), .5),
+                                                                   step1.Stage(step1.DRIVES, .5),
+                                                                   step1.Stage(("eq_3band",)))),
+                    replace(step1.Config(), source_dataset=""),
                     replace(step1.Config(), policy=()),
                     replace(step1.Config(), policy=(step1.Stage(("missing",)),)),
                     replace(step1.Config(), policy=(step1.Stage(step1.DEFAULT_EFFECTS, .5),)),
                     replace(step1.Config(), policy=(step1.Stage(step1.DEFAULT_EFFECTS),
-                                                   step1.Stage(("fuzz",))))]
+                                                   step1.Stage((step1.DRIVES[0],))))]
         for value in (-.1, 1.1, float("nan"), float("inf"), True, "half"):
             invalid.append(replace(step1.Config(), policy=(step1.Stage(step1.DEFAULT_EFFECTS, value),)))
         for config in invalid:
@@ -148,7 +170,7 @@ class ChainTests(unittest.TestCase):
 
         def unsupported(name, values, effects):
             catalog = deepcopy(effects)
-            catalog[name]["source"] = "vst"
+            catalog[name]["source"] = "nam"
             return original(name, values, catalog)
 
         with patch.object(step1, "build_effect", side_effect=unsupported), self.assertRaises(NotImplementedError):
@@ -168,11 +190,11 @@ class LocalPlanTests(unittest.TestCase):
         sf.write(self.dry / "same.wav", self.wave, self.sr, subtype="FLOAT")
         self.inputs = [("guitar_a", self.dry)]
 
-    def plan(self, **kwargs):
-        return step1.Plan(self.inputs, **kwargs)
+    def plan(self, config=PB, **kwargs):
+        return step1.Plan(self.inputs, config, **kwargs)
 
     def test_labels_match_schema_and_fixed_amp(self):
-        plan = self.plan(config=step1.Config(variations=20))
+        plan = self.plan(config=replace(PB, variations=20))
         for _, label in plan.items():
             plan.generator.validator.validate(label)
             self.assertEqual(set(label), {"target_id", "is_synthetic", "dry_sample_id",
@@ -183,8 +205,8 @@ class LocalPlanTests(unittest.TestCase):
         self.assertEqual(list(self.plan().items()), list(self.plan().items()))
 
     def test_variation_count_and_dry_grouping(self):
-        short = [label for _, label in self.plan(config=step1.Config(variations=2)).items()]
-        long = [label for _, label in self.plan(config=step1.Config(variations=7)).items()]
+        short = [label for _, label in self.plan(config=replace(PB, variations=2)).items()]
+        long = [label for _, label in self.plan(config=replace(PB, variations=7)).items()]
         self.assertEqual(len(long), 7)
         self.assertEqual(short, long[:2])
         self.assertEqual(len({label["dry_sample_id"] for label in long}), 1)
@@ -194,7 +216,7 @@ class LocalPlanTests(unittest.TestCase):
         other = self.root / "other"
         other.mkdir()
         sf.write(other / "same.wav", self.wave, self.sr)
-        labels = [label for _, label in step1.Plan(self.inputs + [("guitar_b", other)]).items()]
+        labels = [label for _, label in step1.Plan(self.inputs + [("guitar_b", other)], PB).items()]
         self.assertEqual(len({label["dry_sample_id"] for label in labels}), 2)
         self.assertEqual(len({label["target_id"] for label in labels}), 2)
 
@@ -209,13 +231,15 @@ class LocalPlanTests(unittest.TestCase):
         other.mkdir()
         sf.write(other / "same.wav", self.wave, self.sr)
         inputs = self.inputs + [("guitar_b", other)]
-        self.assertEqual(list(step1.Plan(inputs).items()), list(step1.Plan(list(reversed(inputs))).items()))
+        self.assertEqual(list(step1.Plan(inputs, PB).items()), list(step1.Plan(list(reversed(inputs)), PB).items()))
 
-    def test_settings_change_target_ids(self):
-        old = next(self.plan().items())[1]
-        new = next(self.plan(config=step1.Config(seed=43)).items())[1]
-        self.assertEqual(old["dry_sample_id"], new["dry_sample_id"])
-        self.assertNotEqual(old["target_id"], new["target_id"])
+    def test_settings_change_run_id_and_file_names_follow_convention(self):
+        old, new = self.plan(), self.plan(config=replace(PB, seed=43))
+        label = next(old.items())[1]
+        self.assertEqual(label["dry_sample_id"], next(new.items())[1]["dry_sample_id"])
+        self.assertNotEqual(old.generator.run_id, new.generator.run_id)
+        drive = next(x["effect_type"] for x in label["ground_truth_chain"]["chain"] if x["effect_type"] in PB_DRIVES)
+        self.assertEqual(label["target_id"], f"wet_guitar_a_same_{drive}_001")
 
     def test_duplicate_names_and_overlapping_inputs_rejected(self):
         for inputs in (self.inputs + [("guitar_a", self.dry)],
@@ -351,7 +375,7 @@ class LocalPlanTests(unittest.TestCase):
             self.plan(output=self.dry / "out")
 
     def test_plan_reports_counts_output_and_sources(self):
-        summary = self.plan(config=step1.Config(variations=7), output=self.root / "out").summary()
+        summary = self.plan(config=replace(PB, variations=7), output=self.root / "out").summary()
         self.assertEqual((summary["wav_files"], summary["label_files"], summary["total_output_files"]),
                          (7, 7, 15))
         self.assertEqual(len(summary["preview_labels"]), 3)
@@ -359,7 +383,7 @@ class LocalPlanTests(unittest.TestCase):
         self.assertIn(str(self.root / "out"), summary["output"])
 
     def test_rendered_chain_equals_label_and_audio_roundtrip(self):
-        plan = self.plan(config=step1.Config(variations=3), output=self.root / "out")
+        plan = self.plan(config=replace(PB, variations=3), output=self.root / "out")
         with patch.object(step1, "render_chain", wraps=render_chain) as renderer:
             manifest = plan.execute()
         labels = [label for _, label in plan.items()]
@@ -420,15 +444,15 @@ class LocalPlanTests(unittest.TestCase):
         output = self.root / "cli-out"
         with redirect_stdout(io.StringIO()) as stream:
             step1.main(["--dry-input", "test", str(self.dry), "--output", str(output),
-                        "--variations", "2", "--execute"])
+                        "--effects", "overdrive", "--variations", "2", "--execute"])
         preview, result = [json.loads(line) for line in stream.getvalue().splitlines()]
         self.assertEqual(preview["mode"], "execute")
         self.assertEqual(result["completed_pairs"], 2)
         self.assertTrue((output / "manifest.json").is_file())
 
     def test_rendering_is_reproducible_across_local_runs(self):
-        first = self.plan(config=step1.Config(variations=3), output=self.root / "first")
-        second = self.plan(config=step1.Config(variations=3), output=self.root / "second")
+        first = self.plan(config=replace(PB, variations=3), output=self.root / "first")
+        second = self.plan(config=replace(PB, variations=3), output=self.root / "second")
         first.execute()
         second.execute()
         for (_, a), (_, b) in zip(first.items(), second.items()):
@@ -444,6 +468,33 @@ class LocalPlanTests(unittest.TestCase):
             with self.subTest(args=args), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                 step1.main(["--dry-input", "a", str(self.dry), *args])
         self.assertEqual(before, sorted(self.root.rglob("*")))
+
+    def test_per_drive_counts_and_names(self):
+        plan = self.plan(config=replace(PB, variations=5, per_drive=True))
+        ids = [label["target_id"] for _, label in plan.items()]
+        self.assertEqual(len(ids), 15)
+        self.assertEqual(plan.summary()["pairs"], 15)
+        self.assertEqual(set(ids), {f"wet_guitar_a_same_{d}_{n:03d}" for d in PB_DRIVES for n in range(1, 6)})
+
+    def test_dry_peak_normalization_saves_the_rendered_dry(self):
+        plan = self.plan(config=replace(PB, dry_peak_db=-12.0), output=self.root / "out")
+        manifest = plan.execute()
+        entry = manifest["dry_id_map"][0]
+        dry, sr = sf.read(plan.output / entry["render_input"], dtype="float32", always_2d=True)
+        self.assertAlmostEqual(20 * np.log10(np.max(np.abs(dry))), -12.0, places=4)
+        label = next(plan.items())[1]
+        wet, _ = sf.read(label["file_path"], dtype="float32", always_2d=True)
+        np.testing.assert_array_equal(wet, render_chain(dry.T.copy(), sr, label["ground_truth_chain"]).T)
+        self.assertEqual(manifest["total_output_files"], 4)
+
+    @unittest.skipUnless(has_plugin(), "MultiDrive PRO 플러그인이 없는 PC")
+    def test_vst_drives_render_per_drive(self):
+        plan = step1.Plan(self.inputs, replace(step1.Config(), per_drive=True), self.root / "vst")
+        self.assertEqual(plan.execute()["completed_pairs"], len(step1.DRIVES))
+        for _, label in plan.items():
+            wet, _ = sf.read(label["file_path"], dtype="float32")
+            self.assertTrue(np.isfinite(wet).all())
+            self.assertGreater(np.max(np.abs(wet)), 1e-4, label["target_id"])
 
 
 if __name__ == "__main__":

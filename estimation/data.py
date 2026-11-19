@@ -11,8 +11,8 @@ import soundfile as sf
 import torch
 from torch.utils.data import Dataset
 
-from .audio import AudioConfig, log_mel, read_audio, segment
-from .chain import AUXILIARY, DRIVES, catalog, continuous, fingerprint, normalize
+from .audio import AudioConfig, log_mel, read_audio, segment, validate_rendered_pair
+from .chain import DRIVES, catalog, continuous, fingerprint, normalize
 from .distance import calibrate, raw_distances
 
 
@@ -41,10 +41,8 @@ def validate_chain(chain, definitions):
     drives = [p['effect_type'] for p in items if p['effect_type'] in DRIVES]
     if len(drives) != 1:
         raise ValueError('Exactly one of the seven VST drives is required')
-    expected = ['compressor', drives[0], 'eq_3band']
-    names = [p['effect_type'] for p in items]
-    if len(set(names)) != len(names) or names != [t for t in expected if t in names]:
-        raise ValueError(f'Unsupported chain/order: {names}')
+    if len(items) != 1 or items[0]['effect_type'] != drives[0]:
+        raise ValueError('Drive-only dataset required: compressor/EQ/multiple stages are forbidden')
     for item in items:
         specs = continuous(definitions[item['effect_type']])
         if set(item['values']) != {p['name'] for p in specs}:
@@ -63,6 +61,8 @@ def prepare(dataset, output, seed=42, config=None):
     manifest_path = dataset / 'manifest.json'
     manifest_bytes = manifest_path.read_bytes()
     manifest = json.loads(manifest_bytes)
+    audit_path = dataset/'render_audit.json'
+    audit_hash = hashlib.sha256(audit_path.read_bytes()).hexdigest() if audit_path.exists() else None
     if set(manifest.get('drives', [])) != set(DRIVES) or manifest.get('dry_peak_db') != -12:
         raise ValueError('Expected canonical VST7 dataset with -12 dBFS generated dry')
     definitions = catalog()
@@ -91,7 +91,7 @@ def prepare(dataset, output, seed=42, config=None):
                         'recording_id': rid, 'split': splits[rid], 'drive': drive,
                         'wet_path': str(wet_paths[path.stem]),
                         'ground_truth_chain': label['ground_truth_chain']})
-    config = config or AudioConfig(duration_sec=2.5)
+    config = config or AudioConfig()
     print(json.dumps({'loading_labels':len(records),'preparing_generated_dry':len(dry_map)}),flush=True)
     output.mkdir(parents=True)
     (output/'native_dry').mkdir()
@@ -116,6 +116,8 @@ def prepare(dataset, output, seed=42, config=None):
         if hash_splits.setdefault(digest, split) != split:
             raise ValueError('Identical dry audio leaks across splits')
         wave, source_rate = sf.read(path, dtype='float32', always_2d=True)
+        if source_rate != config.sample_rate:
+            raise ValueError('Generated Dry and CNN must have the same sample rate')
         if not np.isfinite(wave).all():
             raise ValueError('Nonfinite generated dry')
         peak = float(np.max(np.abs(wave)))
@@ -136,18 +138,21 @@ def prepare(dataset, output, seed=42, config=None):
                                           shape=(len(records), config.samples))
     distances = []
     def read_wet(row):
-        import librosa
         wave,sr = sf.read(row['wet_path'],dtype='float32',always_2d=True)
         if len(wave)/sr > config.duration_sec+1/sr:
             raise ValueError('Configured duration would truncate a wet recording')
         audio = wave.mean(1)
         if sr!=config.sample_rate:
-            audio = librosa.resample(audio,orig_sr=sr,target_sr=config.sample_rate)
+            raise ValueError('Generated Wet and CNN must have the same sample rate')
         return segment(audio,config,reject_silence=False)
     pool = ThreadPoolExecutor(max_workers=8)
-    loaded_audio = pool.map(read_wet,records)
+    def bounded_wet_audio():
+        for start in range(0,len(records),32):
+            yield from pool.map(read_wet,records[start:start+32])
+    loaded_audio = bounded_wet_audio()
     for i, (row,audio) in enumerate(zip(records,loaded_audio)):
         row['dry_index'] = dry_indices[row['dry_sample_id']]
+        validate_rendered_pair(dry_audio[row['dry_index']],audio,row['sample_id'])
         row['wet_index'] = i
         row['dry_path'] = str(dataset / dry_map[row['dry_sample_id']]['render_input'])
         wet_audio[i], wet_features[i] = audio, log_mel(audio, config)
@@ -160,7 +165,10 @@ def prepare(dataset, output, seed=42, config=None):
     for array in (dry_features, dry_audio, wet_features, wet_audio):
         array.flush()
     settings = calibrate(distances, [i for i, r in enumerate(records) if r['split'] == 'train'])
-    metadata = {'format_version': 2, 'dataset_root': str(dataset), 'seed': seed,
+    metadata = {'format_version': 3, 'chain_policy': 'single_vst_drive_only',
+                'data_quality_policy':'non_silent_non_passthrough_v1',
+                'source_render_audit_sha256':audit_hash,
+                'dataset_root': str(dataset), 'seed': seed,
                 'source_manifest_sha256': hashlib.sha256(manifest_bytes).hexdigest(),
                 'source_effects_digest': manifest.get('effects_digest'),
                 'source_algorithm': manifest.get('algorithm'),
@@ -196,7 +204,10 @@ def load_manifest(cache):
     cache = Path(cache)
     metadata = json.loads((cache/'dataset.json').read_text(encoding='utf-8'))
     rows = [json.loads(line) for line in (cache/'manifest.jsonl').read_text(encoding='utf-8').splitlines()]
-    if metadata['format_version'] != 2 or fingerprint(metadata['catalog']) != metadata['catalog_hash']:
+    if (metadata['format_version'] != 3 or metadata.get('chain_policy') != 'single_vst_drive_only'
+            or metadata.get('data_quality_policy') != 'non_silent_non_passthrough_v1'
+            or set(metadata['catalog']) != set(DRIVES)
+            or fingerprint(metadata['catalog']) != metadata['catalog_hash']):
         raise ValueError('Invalid VST cache')
     seen, hashes = {}, {}
     for r in metadata['dry_sources']:
@@ -204,6 +215,7 @@ def load_manifest(cache):
         if hashes.setdefault(r['sha256'], s) != s:
             raise ValueError('Dry-content leakage')
     for row in rows:
+        validate_chain(row['ground_truth_chain'],metadata['catalog'])
         if (seen.setdefault(row['recording_id'], row['split']) != row['split'] or
                 metadata['splits'][row['recording_id']] != row['split']):
             raise ValueError('Original-recording split leakage')
@@ -239,7 +251,6 @@ class PairDataset(Dataset):
         return {'dry': torch.from_numpy(self.dry[row['dry_index']].copy()),
                 'wet': torch.from_numpy(self.wet[row['wet_index']].copy()),
                 'label': DRIVES.index(row['drive']),
-                'presence': torch.tensor([t in items for t in AUXILIARY],dtype=torch.float32),
                 'knobs': {t: torch.tensor([normalize(items[t][p['name']],p) if t in items else 0
                                           for p in continuous(d)],dtype=torch.float32)
                           for t,d in self.metadata['catalog'].items()},

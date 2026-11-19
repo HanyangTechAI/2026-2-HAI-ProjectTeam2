@@ -8,7 +8,7 @@ from .evaluate import evaluate, renderer_status
 from .train import train
 
 
-def run(dataset,output='outputs/vst7',epochs=30,batch_size=16,threads=4,
+def run(dataset,output='outputs/vst7_drive_only',epochs=30,batch_size=16,threads=4,
         evaluate_only=False,render_samples=70):
     output = Path(output)
     cache = output/'dataset'
@@ -31,7 +31,7 @@ def run(dataset,output='outputs/vst7',epochs=30,batch_size=16,threads=4,
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dataset',required=True)
-    parser.add_argument('--output',default='outputs/vst7')
+    parser.add_argument('--output',default='outputs/vst7_drive_only')
     parser.add_argument('--epochs',type=int,default=30)
     parser.add_argument('--batch-size',type=int,default=16)
     parser.add_argument('--threads',type=int,default=4)

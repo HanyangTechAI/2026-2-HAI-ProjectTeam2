@@ -26,12 +26,12 @@ class EstimationTest(unittest.TestCase):
 
     def prediction(self):
         return {'probabilities':dict(zip(DRIVES,[.4,.2,.15,.1,.05,.05,.05])),
-                'presence':{'compressor':.9,'eq_3band':.8},
                 'values':{t:{p['name']:p['default'] for p in continuous(d)}
                           for t,d in self.definitions.items()}}
 
-    def test_catalog_only_seven_vst_and_two_stages(self):
-        self.assertEqual(set(self.definitions),set(DRIVES)|set(AUXILIARY))
+    def test_catalog_only_seven_vst_without_auxiliary_stages(self):
+        self.assertEqual(set(self.definitions),set(DRIVES))
+        self.assertEqual(AUXILIARY,())
         for t in DRIVES:
             self.assertEqual(self.definitions[t]['source'],'vst')
             self.assertNotIn('input_gain_db',[p['name'] for p in continuous(self.definitions[t])])
@@ -39,33 +39,32 @@ class EstimationTest(unittest.TestCase):
     def test_normalized_vectors_include_every_chain_stage(self):
         item = make_candidates(self.prediction(),k=1)[0]
         self.assertEqual([p['effect_type'] for p in item['chain']['chain']],
-                         ['compressor','808_scream','eq_3band'])
+                         ['808_scream'])
         changed = with_vector(item,[.37]*len(item['x0']))
         for spec in item['vector_spec']:
             actual = changed['chain']['chain'][spec['effect_index']]['values'][spec['name']]
             self.assertAlmostEqual(normalize(actual,spec),.37)
-        self.assertEqual(item['chain']['chain'][0]['values']['ratio'],4)
+        self.assertEqual(item['chain']['chain'][0]['values']['level'],50)
 
-    def test_inventory_top_k_and_presence_threshold(self):
+    def test_inventory_top_k_and_single_stage_candidates(self):
         prediction = self.prediction()
         self.assertEqual(make_candidates(prediction,[],3),[])
         items = make_candidates(prediction,['m_fuzz','b_drive'],3)
         self.assertEqual([p['effect_type'] for p in items],['b_drive','m_fuzz'])
-        prediction['presence'] = {'compressor':.49,'eq_3band':.1}
         self.assertEqual(len(make_candidates(prediction,k=1)[0]['chain']['chain']),1)
         prediction['probabilities']['b_drive'] = float('nan')
         with self.assertRaises(ValueError):
             make_candidates(prediction)
 
-    def test_optional_chain_and_unknown_knobs_are_validated(self):
+    def test_mixed_chain_and_unknown_knobs_are_rejected(self):
         chain = make_candidates(self.prediction(),k=1)[0]['chain']
         self.assertEqual(validate_chain(chain,self.definitions),'808_scream')
         altered = copy.deepcopy(chain)
-        altered['chain'].reverse()
+        altered['chain'].append({'effect_type':'compressor','values':{}})
         with self.assertRaises(ValueError):
             validate_chain(altered,self.definitions)
         altered = copy.deepcopy(chain)
-        altered['chain'][1]['values']['input_gain_db'] = 0
+        altered['chain'][0]['values']['input_gain_db'] = 0
         with self.assertRaises(ValueError):
             validate_chain(altered,self.definitions)
 
@@ -98,22 +97,48 @@ class EstimationTest(unittest.TestCase):
         model = PairCNN(self.definitions,channels=(8,8,16,16),hidden=32)
         output = model(torch.randn(2,1,64,64),torch.randn(2,1,64,64))
         self.assertEqual(output['logits'].shape,(2,7))
-        self.assertEqual(output['presence'].shape,(2,2))
-        batch = {'label':torch.zeros(2,dtype=torch.long),'presence':torch.zeros(2,2),
+        self.assertNotIn('presence',output)
+        batch = {'label':torch.zeros(2,dtype=torch.long),
                  'distance':torch.ones(2,2),
                  'active':{t:torch.full((2,),t==DRIVES[0]) for t in self.definitions},
                  'knobs':{t:torch.zeros(2,len(continuous(d))) for t,d in self.definitions.items()}}
         first,_ = supervised_loss(output,batch)
         altered = copy.deepcopy(batch)
-        altered['knobs']['compressor'][:] = 1e5
         altered['knobs'][DRIVES[1]][:] = 1e5
         second,_ = supervised_loss(output,altered)
         torch.testing.assert_close(first,second)
         first.backward()
-        self.assertIsNone(model.knobs['compressor'].weight.grad)
         self.assertIsNone(model.knobs[DRIVES[1]].weight.grad)
         self.assertIsNotNone(model.knobs[DRIVES[0]].weight.grad)
         self.assertIsNotNone(model.distance.weight.grad)
+
+    def test_encoder_fusion_topology_is_preserved_and_audio_rates_match(self):
+        model = PairCNN(self.definitions)
+        convs = [m for m in model.encoder if isinstance(m,torch.nn.Conv2d)]
+        self.assertEqual([m.out_channels for m in convs],[8,16,32,64])
+        self.assertEqual(model.fusion[0].in_features,1024)
+        self.assertEqual(model.fusion[0].out_features,256)
+        self.assertEqual(model.classifier.out_features,7)
+        self.assertFalse(hasattr(model,'presence'))
+        self.assertEqual(set(model.knobs),set(DRIVES))
+        self.assertEqual(AudioConfig().sample_rate,44100)
+
+    def test_old_mixed_checkpoint_is_rejected(self):
+        from estimation.infer import load_predictor
+        with tempfile.TemporaryDirectory() as folder:
+            checkpoint = Path(folder)/'old.pt'
+            torch.save({'format_version':2},checkpoint)
+            with self.assertRaisesRegex(ValueError,'drive-only'):
+                load_predictor(checkpoint)
+
+    def test_unprocessed_or_silent_pairs_are_rejected(self):
+        from estimation.audio import validate_rendered_pair
+        dry = np.sin(np.arange(4096)*.1).astype('float32')*.2
+        with self.assertRaisesRegex(ValueError,'pass-through'):
+            validate_rendered_pair(dry,dry.copy(),'bad_vst')
+        with self.assertRaisesRegex(ValueError,'Silent VST'):
+            validate_rendered_pair(dry,np.zeros_like(dry),'bad_vst')
+        self.assertGreater(validate_rendered_pair(dry,dry*.7)['max_change_from_dry'],0)
 
     def test_import_uses_render_input_and_cache_works_without_shared_drive(self):
         import soundfile as sf

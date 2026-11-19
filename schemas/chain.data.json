@@ -11,10 +11,11 @@
       }
     },
     {
-      "effect_type": "overdrive",
+      "effect_type": "808_scream",
       "values": {
-        "drive": 6.0,
-        "level": 0.0
+        "level": 50.0,
+        "overdrive": 70.0,
+        "tone": 50.0
       }
     },
     {

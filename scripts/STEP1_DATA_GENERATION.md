@@ -8,6 +8,35 @@
 기존 `feat/spectral-distance`와 PR #12, 다른 폴더의 미커밋 작업은 유지했습니다.
 commit·push·PR 생성은 하지 않았습니다.
 
+## 0. Step 1 데이터 생성 (팀 확정 설정, 1116)
+
+Step 1 데이터는 이 스크립트 하나로 만듭니다 (`Create_Synthetic_pairs.py`는 기존 결과 재현용).
+
+| 항목 | 설정 |
+|---|---|
+| 드라이브 | MultiDrive PRO 7종 (`808_scream`, `b_drive`, `o_drive`, `one_distortion`, `bat_distortion`, `f_fuzz`, `m_fuzz`) |
+| 조합 | 컴프(50%) → 드라이브 → EQ(50%) |
+| 개수 | dry 하나당 **드라이브별 5개** (`--per-drive --variations 5`) → dry 78개면 2,730쌍 |
+| 음량 | dry를 피크 -12 dBFS로 맞춘 뒤 렌더링 (`--dry-peak-db -12`), wet은 그대로 저장 |
+| 파일명 | `wet_{dry}_{schema_key}_{번호}.wav` (`{dry}` = 입력 이름_원본 파일 이름) |
+
+```powershell
+# 미리보기 (파일을 만들지 않음)
+python -m scripts.generate_step1_dataset `
+  --dry-input strat data\dry\Fender_Strat_Clean\audio `
+  --per-drive --variations 5 --dry-peak-db -12 --seed 42
+
+# 실제 생성: 로컬 임시 폴더에만 저장됩니다. 끝나면 폴더째 공유 드라이브에 올립니다.
+python -m scripts.generate_step1_dataset `
+  --dry-input strat data\dry\Fender_Strat_Clean\audio `
+  --per-drive --variations 5 --dry-peak-db -12 --seed 42 `
+  --output "$env:TEMP\step1_vst_v1" --execute
+```
+
+- MultiDrive PRO가 설치·활성화된 PC에서만 실행됩니다 (`effects/README.md` 참고). 미리보기는 플러그인 없이도 됩니다.
+- `--dry-peak-db`를 쓰면 렌더링에 실제로 넣은 dry를 출력 폴더의 `dry/`에 함께 저장합니다.
+  **탐색·학습에서는 원본 대신 이 dry를 써야** 정답 wet과 같은 입력이 됩니다 (`manifest.json`의 `render_input`).
+
 ## 1. 먼저 미리보기
 
 PowerShell에서 아래처럼 실행합니다. `--execute`가 없으면 **WAV·JSON·출력 폴더를 만들지 않습니다.**
@@ -36,11 +65,11 @@ $python = 'C:\hai_TeamProject\.venv\Scripts\python.exe'
 | 단계 | 기본 동작 |
 |---|---|
 | Compressor | 50% 확률로 적용, 나머지는 생략 |
-| Drive | overdrive / distortion / fuzz 중 하나를 같은 확률로 선택 |
+| Drive | MultiDrive PRO 7종 중 하나를 같은 확률로 선택 (`--per-drive`면 7종 모두 같은 개수) |
 | EQ | eq_3band를 50% 확률로 적용, 나머지는 생략 |
 
 Drive 단독, Compressor + Drive, Drive + EQ, Compressor + Drive + EQ의 네 형태를 지원합니다.
-Drive가 3종이므로 기본 조합은 총 12가지입니다. 매번 모든 조합을 일정 개수씩 만드는 방식은 아닙니다.
+Drive가 7종이므로 기본 조합은 총 28가지입니다. 매번 모든 조합을 일정 개수씩 만드는 방식은 아닙니다.
 **이 순서·확률은 팀에서 확정한 최종 정책이 아닙니다.**
 
 각 이펙터의 모든 파라미터 이름·범위·기본값은 `schemas/effects.data.json`에서 읽습니다.
@@ -49,20 +78,19 @@ Drive가 3종이므로 기본 조합은 총 12가지입니다. 매번 모든 조
 - `scale: log`: 로그 값 사이에서 균등 추출한 뒤 원래 단위로 돌립니다.
   compressor의 ratio·attack·release와 EQ의 mid frequency가 해당합니다.
 - 범주형: 지정된 `options` 중 하나를 같은 확률로 뽑습니다. boolean도 지원합니다.
-- **fuzz.mode는 현재 렌더러가 무시합니다.** 실제 소리 차이가 있다고 기록하지 않도록
-  기존 생성기처럼 `Vintage`로 고정하고 미리보기·manifest에 경고합니다.
-- 렌더러가 처리하지 않는 다른 노브가 추가돼도 기본값으로 고정하고 경고합니다.
-  외부 VST나 팀 렌더러가 생성할 수 없는 이펙터는 거부합니다.
+- 렌더러가 처리하지 않는 노브가 추가되면 기본값으로 고정하고 경고합니다.
+  팀 렌더러가 생성할 수 없는 이펙터(`source`가 pedalboard·vst가 아닌 것)는 거부합니다.
+- pedalboard 드라이브(`overdrive`, `distortion`, `fuzz`)는 대체용으로 남아 있으며 `--effects`로 선택할 수 있습니다.
 
 오디오 처리는 기존 `effects.render_chain`만 사용합니다.
 `amp_id`는 기존 `schemas/amp.data.json`의 `fixed_amp_v1`을 유지합니다.
 앰프는 현재 팀 렌더러에서 실제 처리되지 않습니다.
-음량 기준 재추출·자동 정규화·클리핑 보정은 추가하지 않았습니다. 매우 작은 음량과 1을 넘는
-진폭이 나올 수 있으며 FLOAT WAV로 저장합니다. 실제 음질·음량 기준은 이후 팀이 결정해야 합니다.
+wet의 음량 정규화·클리핑 보정은 하지 않습니다 (노브의 level/volume 차이를 지우지 않기 위함).
+대신 `--dry-peak-db`로 입력(dry) 음량을 맞출 수 있습니다. 1을 넘는 진폭이 나올 수 있어 FLOAT WAV로 저장합니다.
 
 ## 3. 개수·시드·정책 바꾸기
 
-`--variations 3`은 **원본 하나당 총 3개**입니다. 기존 생성기의 드라이브별 개수 설정과 다릅니다.
+`--variations 3`은 **원본 하나당 총 3개**입니다. `--per-drive`를 붙이면 **원본 하나당 드라이브별 3개**가 됩니다.
 원본이 N개이면 WAV는 `N × variations`개, 라벨도 같은 수이며 manifest가 1개 추가됩니다.
 
 ```powershell
@@ -116,13 +144,13 @@ Drive가 3종이므로 기본 조합은 총 12가지입니다. 매번 모든 조
 
 ```json
 {
-  "target_id": "wet_<dry 해시>_<설정 해시>_000001",
+  "target_id": "wet_strat_sample_G53-40100-1111-00001_808_scream_001",
   "is_synthetic": true,
   "dry_sample_id": "dry_<입력 이름과 상대 파일 경로의 SHA-256>",
   "ground_truth_chain": {
     "amp_id": "fixed_amp_v1",
     "chain": [
-      {"effect_type": "overdrive", "values": {"drive": 6.0, "level": 0.0}}
+      {"effect_type": "808_scream", "values": {"level": 50.0, "overdrive": 70.0, "tone": 50.0}}
     ]
   },
   "source_dataset": "IDMT-SMT-Guitar V2",
@@ -137,7 +165,7 @@ Drive가 3종이므로 기본 조합은 총 12가지입니다. 매번 모든 조
 - Dry ID는 입력 이름과 폴더 내 상대 파일 경로를 함께 해시합니다.
   다른 기타의 동명 WAV, 서로 다른 하위 폴더의 동명 WAV는 구분됩니다.
 - 같은 원본의 모든 변형은 같은 Dry ID를 사용합니다.
-- Target ID는 Dry ID·시드 등 설정 해시·변형 번호를 사용합니다.
+- Target ID(파일명)는 `wet_{입력 이름}_{원본 상대 경로}_{드라이브 key}_{번호}`입니다. 설정 해시(`run_id`)는 `manifest.json`에 남깁니다.
 - 입력 이름 중복, 겹치는 입력 폴더와 같은 실제 파일의 링크·하드링크 중복 선택을 거부합니다.
 - `manifest.json`에는 원래 입력 이름·상대 경로·실제 경로와 Dry ID의 대응표를 남깁니다.
   동일 녹음의 복사본 여부는 파일 내용만으로 자동 판별하지 않습니다.

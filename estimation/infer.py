@@ -6,16 +6,19 @@ import numpy as np
 import torch
 
 from .audio import AudioConfig, log_mel, read_audio, segment
-from .chain import AUXILIARY, DRIVES, continuous, denormalize, fingerprint, make_candidates
+from .chain import DRIVES, continuous, denormalize, fingerprint, make_candidates
 from .cnn import PairCNN
 from .data import write_json
 
 
 def load_predictor(checkpoint, device='cpu'):
     state = torch.load(checkpoint, map_location=device, weights_only=True)
-    if (state['format_version'] != 2 or fingerprint(state['catalog']) != state['catalog_hash'] or
+    if (state['format_version'] != 3 or state.get('chain_policy') != 'single_vst_drive_only'
+            or state.get('data_quality_policy') != 'non_silent_non_passthrough_v1'
+            or set(state['catalog']) != set(DRIVES)
+            or fingerprint(state['catalog']) != state['catalog_hash'] or
             state['classes'] != list(DRIVES)):
-        raise ValueError('Expected VST7 format_version=2 checkpoint')
+        raise ValueError('Expected drive-only VST7 format_version=3 checkpoint')
     model = PairCNN(state['catalog'], **state['model_config']).to(device)
     model.load_state_dict(state['state_dict'])
     model.eval()
@@ -24,7 +27,6 @@ def load_predictor(checkpoint, device='cpu'):
 
 def decode(output, index, definitions, settings=None):
     result = {'probabilities': dict(zip(DRIVES, output['logits'][index].softmax(0).tolist())),
-              'presence': dict(zip(AUXILIARY, output['presence'][index].sigmoid().tolist())),
               'values': {t: {p['name']: denormalize(float(v), p)
                              for p,v in zip(continuous(d), output['knobs'][t][index])}
                          for t,d in definitions.items()},
@@ -70,12 +72,14 @@ def main():
         raise ValueError('Use manifest.render_input from generated dry/, already peak -12 dBFS')
     native = native[:,0] if native.shape[1]==1 else native.T
     model, config, state = load_predictor(args.checkpoint)
+    if rate != config.sample_rate:
+        raise ValueError('Use generated Dry at the checkpoint sample rate')
     dry = segment(read_audio(args.dry, config.sample_rate), config)
     reference = segment(read_audio(args.reference, config.sample_rate), config, reject_silence=False)
     result = predict_pair(model, config, dry, reference, state['distance_settings'])
     result['candidates'] = make_candidates(result, args.owned, args.k, model.definitions)
     result['generated_dry_path'] = args.dry
-    result['format_version'] = 2
+    result['format_version'] = 3
     result['distance_settings'] = state['distance_settings']
     result['native_render_rate'] = rate
     if args.refine_budget is not None:

@@ -74,3 +74,6 @@ Thumbs.db
 *.vst
 *.component
 *.dll
+
+# 개인 에디터 설정
+.continuerules

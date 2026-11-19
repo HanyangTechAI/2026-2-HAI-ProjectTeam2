@@ -71,9 +71,10 @@ class ValidationTests(unittest.TestCase):
             lambda e: e["overdrive"]["params"][0].update(default="abc"),
             lambda e: e["overdrive"]["params"][0].update(range=[15.0, 0.0]),
             lambda e: e["overdrive"]["params"].append(dict(e["overdrive"]["params"][0])),
-            lambda e: e["overdrive"]["params"][0].update(scale="log"),
+            lambda e: e["overdrive"]["params"][3].update(scale="log"),  # level 범위에 0 이하 포함
             lambda e: e["fuzz"]["params"][3].update(default="Unknown"),
-            lambda e: e["fuzz"]["params"][3].update(scale="linear"),
+            lambda e: e["fuzz"]["params"][3].update(type="categorical", options=["A", "B"], default="A",
+                                                    scale="linear"),
             lambda e: e["distortion"].update(fixed_params={"Compressor.ratio": 2.0}),
         ]
         for index, mutate in enumerate(mutations):

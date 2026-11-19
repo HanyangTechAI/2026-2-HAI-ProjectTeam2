@@ -1,23 +1,9 @@
 """Optional inference renderer. Loading WAVs/training never needs a VST license."""
-import os
 from pathlib import Path
 
 import numpy as np
 
-from .chain import DRIVES, MODEL_NAMES, catalog, continuous
-
-
-def plugin_path():
-    folder = Path(os.environ.get('HAI_VST_DIR', r'C:\Program Files\Common Files\VST3\Audified'))
-    if folder.is_file() or folder.suffix.lower() == '.vst3':
-        candidates = [folder]
-    else:
-        bundle = folder / 'MultiDrive PRO.vst3'
-        candidates = [bundle/'Contents/x86_64-win/MultiDrive PRO.vst3', bundle]
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    raise FileNotFoundError('MultiDrive PRO not installed; set HAI_VST_DIR. Trial activation is manual.')
+from .chain import DRIVES, catalog, continuous
 
 
 def activation_preflight(renderer, dry, rate, definitions):
@@ -40,33 +26,20 @@ def activation_preflight(renderer, dry, rate, definitions):
 
 class Renderer:
     def __init__(self, definitions=None):
-        from pedalboard import load_plugin
+        from effects.render import find_plugin
         self.definitions = definitions or catalog()
-        self.plugin = load_plugin(str(plugin_path()))
-        self.plugin_file = str(plugin_path())
+        if set(self.definitions) != set(DRIVES):
+            raise ValueError('Renderer expects the seven drive-only definitions')
+        self.plugin_file = find_plugin('MultiDrivePro')
 
     def __call__(self, dry, rate, chain):
-        from pedalboard import Pedalboard
-        from effects.render import build_effect
-        plugins = []
-        for item in chain['chain']:
-            name, values = item['effect_type'], item['values']
-            if name not in DRIVES:
-                plugins.extend(build_effect(name, values))
-                continue
-            plugin = self.plugin
-            if hasattr(plugin, 'bypass'):
-                plugin.bypass = False
-            plugin.pedal_model = MODEL_NAMES[name]
-            # Reset known controls, including nonsampled input gain, each render.
-            if hasattr(plugin, 'input_gain_db'):
-                plugin.input_gain_db = 0.0
-            for p in self.definitions[name]['params']:
-                setattr(plugin, p['maps_to'].split('.')[-1], values[p['name']])
-            plugins.append(plugin)
-        audio = np.asarray(Pedalboard(plugins)(dry, rate, reset=True), dtype=np.float32)
-        if audio.shape != dry.shape or not np.isfinite(audio).all():
-            raise ValueError('Renderer changed shape or returned nonfinite values')
+        from effects.render import render_chain
+        from .data import validate_chain
+        validate_chain(chain,self.definitions)
+        # Use main's model/rate-specific loading, 2048 buffer and 0.5 s warmup.
+        audio = np.asarray(render_chain(dry,rate,chain,effects=self.definitions),dtype=np.float32)
+        from .audio import validate_rendered_pair
+        validate_rendered_pair(dry,audio)
         return audio
 
 

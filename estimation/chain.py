@@ -8,7 +8,7 @@ import numpy as np
 
 DRIVES = ('808_scream', 'b_drive', 'o_drive', 'one_distortion',
           'bat_distortion', 'f_fuzz', 'm_fuzz')
-AUXILIARY = ('compressor', 'eq_3band')
+AUXILIARY = ()  # Current task: one MultiDrive PRO model only, no optional stages.
 MODEL_NAMES = dict(zip(DRIVES, ('808-Scream', 'B-Drive', 'O-Drive',
                               'One-Distortion', 'BAT-Distortion', 'F-Fuzz', 'M-Fuzz')))
 
@@ -21,13 +21,13 @@ def catalog():
     """Read team definitions without importing or loading any VST plugin.
 
     Older checkouts use display-name keys. Expose only the seven canonical
-    dataset keys and the two optional stages. input_gain_db was not sampled
+    dataset keys only. input_gain_db is fixed rather than sampled:
     in this dataset: keep it fixed at zero rather than inventing a label.
     """
     path = Path(__file__).resolve().parents[1] / 'schemas/effects.data.json'
     raw = json.loads(path.read_text(encoding='utf-8'))
     result = {}
-    for name in (*DRIVES, *AUXILIARY):
+    for name in DRIVES:
         source = name if name in raw else MODEL_NAMES.get(name, name)
         if source not in raw:
             raise ValueError(f'Missing effect definition: {name}')
@@ -64,7 +64,7 @@ def denormalize(value, param):
 
 
 def make_candidates(prediction, owned_effect_types=None, k=3, definitions=None):
-    """One full Compressor -> VST -> EQ chain per permitted drive.
+    """One single-VST chain per permitted drive, with no compressor or EQ.
 
     model_score is a drive softmax probability, NOT an audio-distance score.
     vector_spec includes effect_index so CMA-ES can update every active stage.
@@ -81,10 +81,7 @@ def make_candidates(prediction, owned_effect_types=None, k=3, definitions=None):
     ranked = sorted(allowed, key=lambda t: (-probabilities[t], t))[:k]
     candidates = []
     for drive in ranked:
-        names = ([AUXILIARY[0]] if prediction['presence'][AUXILIARY[0]] >= 0.5 else [])
-        names += [drive]
-        if prediction['presence'][AUXILIARY[1]] >= 0.5:
-            names.append(AUXILIARY[1])
+        names = [drive]
         items, specs, vector = [], [], []
         for name in names:
             values = prediction['values'][name]

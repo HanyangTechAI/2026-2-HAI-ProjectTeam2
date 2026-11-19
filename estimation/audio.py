@@ -6,10 +6,10 @@ import numpy as np
 
 @dataclass(frozen=True)
 class AudioConfig:
-    sample_rate: int = 22050
-    duration_sec: float = 4.0
-    n_fft: int = 1024
-    hop_length: int = 256
+    sample_rate: int = 44100
+    duration_sec: float = 2.5
+    n_fft: int = 2048
+    hop_length: int = 512
     n_mels: int = 64
     fmin: float = 20.0
     fmax: float | None = None
@@ -75,3 +75,17 @@ def log_mel(audio, config):
     if not np.isfinite(power).all():
         raise ValueError('Non-finite mel spectrum')
     return (np.log(np.maximum(power, config.power_floor)) / 10).astype(np.float32)[None]
+
+
+def validate_rendered_pair(dry, wet, sample_id=''):
+    """Reject plugin dropouts/pass-through before any labels enter training."""
+    dry,wet = np.asarray(dry),np.asarray(wet)
+    if dry.shape!=wet.shape or not wet.size or not np.isfinite(wet).all():
+        raise ValueError(f'Invalid rendered waveform: {sample_id}')
+    peak = float(np.max(np.abs(wet)))
+    change = float(np.max(np.abs(wet-dry)))
+    if peak<=1e-7:
+        raise ValueError(f'Silent VST output: {sample_id}')
+    if change<=1e-7:
+        raise ValueError(f'Unprocessed VST output (Dry pass-through): {sample_id}')
+    return {'peak':peak,'max_change_from_dry':change}
