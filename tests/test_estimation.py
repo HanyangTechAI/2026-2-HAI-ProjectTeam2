@@ -1,4 +1,5 @@
-"""Meaningful invariants for split isolation, masked loss and render budgets."""
+"""VST7 contracts and learning checks; no installed/activated plugin required."""
+import copy
 import json
 import tempfile
 import unittest
@@ -7,14 +8,14 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from effects import render_chain
-from estimation.audio import AudioConfig, log_mel, segment
-from estimation.cnn import PairCNN, masked_loss
-from estimation.chain import (candidate, catalog, chain_instance, continuous,
-                               denormalize, make_candidates, normalize, with_vector)
-from estimation.data import load_manifest, prepare, split_recordings
-from estimation.experiments import overdrive_subset
-from estimation.refine import refine_candidates
+from estimation.chain import (AUXILIARY,DRIVES,catalog,continuous,denormalize,
+                               make_candidates,normalize,with_vector)
+from estimation.cnn import PairCNN,supervised_loss
+from estimation.data import split_recordings,validate_chain
+from estimation.distance import calibrate,compare
+from estimation.audio import AudioConfig
+from estimation.data import PairDataset,prepare
+from estimation.evaluate import render_subset
 
 
 class EstimationTest(unittest.TestCase):
@@ -22,180 +23,161 @@ class EstimationTest(unittest.TestCase):
     def setUpClass(cls):
         torch.set_num_threads(2)
         cls.definitions = catalog()
-        cls.sr = 8000
-        cls.config = AudioConfig(sample_rate=cls.sr, duration_sec=0.6, n_fft=256,
-                                hop_length=64, n_mels=32)
-        t = np.arange(cls.config.samples) / cls.sr
-        cls.dry = (0.2 * np.sin(2 * np.pi * 233 * t) * np.exp(-2 * t)).astype(np.float32)
 
     def prediction(self):
-        return {'probabilities': {'bypass': 0.1, 'overdrive': 0.5, 'distortion': 0.3, 'fuzz': 0.1},
-                'values': {t: {p['name']: p['default'] for p in d['params']}
-                           for t, d in self.definitions.items()}}
+        return {'probabilities':dict(zip(DRIVES,[.4,.2,.15,.1,.05,.05,.05])),
+                'values':{t:{p['name']:p['default'] for p in continuous(d)}
+                          for t,d in self.definitions.items()}}
 
-    def test_normalization_roundtrip_and_vector_order(self):
-        for t, definition in self.definitions.items():
-            item = candidate(t, 0.5)
-            for coordinate in (0, 0.37, 1):
-                result = with_vector(item, [coordinate] * len(item['x0']))
-                for p in continuous(definition):
-                    value = result['chain']['chain'][0]['values'][p['name']]
-                    self.assertAlmostEqual(normalize(value, p), coordinate)
-        log_param = {'name': 'freq', 'range': [10, 1000], 'scale': 'log'}
-        self.assertAlmostEqual(denormalize(0.5, log_param), 100)
-        self.assertAlmostEqual(normalize(100, log_param), 0.5)
+    def test_catalog_only_seven_vst_without_auxiliary_stages(self):
+        self.assertEqual(set(self.definitions),set(DRIVES))
+        self.assertEqual(AUXILIARY,())
+        for t in DRIVES:
+            self.assertEqual(self.definitions[t]['source'],'vst')
+            self.assertNotIn('input_gain_db',[p['name'] for p in continuous(self.definitions[t])])
 
-    def test_inventory_and_unrendered_mode(self):
+    def test_normalized_vectors_include_every_chain_stage(self):
+        item = make_candidates(self.prediction(),k=1)[0]
+        self.assertEqual([p['effect_type'] for p in item['chain']['chain']],
+                         ['808_scream'])
+        changed = with_vector(item,[.37]*len(item['x0']))
+        for spec in item['vector_spec']:
+            actual = changed['chain']['chain'][spec['effect_index']]['values'][spec['name']]
+            self.assertAlmostEqual(normalize(actual,spec),.37)
+        self.assertEqual(item['chain']['chain'][0]['values']['level'],50)
+
+    def test_inventory_top_k_and_single_stage_candidates(self):
         prediction = self.prediction()
-        self.assertEqual([c['effect_type'] for c in make_candidates(prediction, [], k=3)], ['bypass'])
-        items = make_candidates(prediction, ['fuzz', 'compressor', 'unknown'], k=99)
-        self.assertEqual({c['effect_type'] for c in items}, {'fuzz', 'bypass'})
-        self.assertEqual(len(candidate('fuzz', 1)['x0']), 3)
-        self.assertEqual(chain_instance('fuzz', {'mode': 'Modern'})['chain'][0]['values']['mode'], 'Vintage')
-        self.assertEqual(candidate('bypass', 1)['x0'], [])
-        prediction['probabilities']['fuzz'] = float('nan')
+        self.assertEqual(make_candidates(prediction,[],3),[])
+        items = make_candidates(prediction,['m_fuzz','b_drive'],3)
+        self.assertEqual([p['effect_type'] for p in items],['b_drive','m_fuzz'])
+        self.assertEqual(len(make_candidates(prediction,k=1)[0]['chain']['chain']),1)
+        prediction['probabilities']['b_drive'] = float('nan')
         with self.assertRaises(ValueError):
-            make_candidates(prediction, ['fuzz'])
+            make_candidates(prediction)
 
-    def test_recording_split_is_grouped_and_deterministic(self):
-        ids = ['take-a', 'take-a', 'take-b', 'take-c', 'take-d']
-        splits = split_recordings(ids)
-        self.assertEqual(splits, split_recordings(list(reversed(ids))))
-        self.assertEqual(set(splits.values()), {'train', 'validation', 'test'})
-        self.assertEqual(len(splits), 4)
+    def test_mixed_chain_and_unknown_knobs_are_rejected(self):
+        chain = make_candidates(self.prediction(),k=1)[0]['chain']
+        self.assertEqual(validate_chain(chain,self.definitions),'808_scream')
+        altered = copy.deepcopy(chain)
+        altered['chain'].append({'effect_type':'compressor','values':{}})
+        with self.assertRaises(ValueError):
+            validate_chain(altered,self.definitions)
+        altered = copy.deepcopy(chain)
+        altered['chain'][0]['values']['input_gain_db'] = 0
+        with self.assertRaises(ValueError):
+            validate_chain(altered,self.definitions)
 
-    def test_silence_nonfinite_and_gain_information(self):
-        with self.assertRaises(ValueError):
-            segment(np.zeros(100), self.config)
-        with self.assertRaises(ValueError):
-            segment(np.array([np.nan]), self.config)
-        with self.assertRaises(ValueError):
-            log_mel(np.full(self.config.samples, np.inf), self.config)
-        self.assertFalse(np.allclose(log_mel(self.dry, self.config), log_mel(self.dry * 0.2, self.config)))
+    def test_group_split_and_train_only_distance_scaling(self):
+        ids = [f'dry{i}' for i in range(78)]
+        split = split_recordings(ids+ids)
+        self.assertEqual(split,split_recordings(list(reversed(ids))))
+        self.assertEqual([list(split.values()).count(s) for s in ('train','validation','test')],[54,12,12])
+        raw = [[1,2],[3,6],[1e10,1e10]]
+        settings = calibrate(raw,[0,1])
+        self.assertEqual(settings['spectral_scale'],2)
+        self.assertEqual(settings['dynamics_scale'],4)
+        x = np.sin(np.arange(4000)*.1)*.1
+        self.assertEqual(compare(x,x,8000,settings)['combined'],0)
+        self.assertGreater(compare(x,x*.5,8000,settings)['combined'],0)
 
-    def test_default_four_second_preprocessing_and_forward(self):
-        config = AudioConfig()
-        dry = segment(self.dry, config)
-        mel = log_mel(dry, config)
-        self.assertEqual(mel.shape, (1, 64, 345))
+    def test_render_sampling_is_balanced_and_deterministic(self):
+        rows = [{'sample_id':f'{t}_{i}_{v}','recording_id':str(i),'drive':t}
+                for t in DRIVES for i in range(12) for v in range(5)]
+        selected = render_subset(rows,70)
+        self.assertEqual(len(selected),70)
+        self.assertEqual(selected,render_subset(rows,70))
+        for drive in DRIVES:
+            per_class = [r for r in rows if r['sample_id'] in selected and r['drive']==drive]
+            self.assertEqual(len(per_class),10)
+            self.assertEqual(len({r['recording_id'] for r in per_class}),10)
+        self.assertEqual(len(render_subset(rows,-1)),420)
+
+    def test_joint_loss_masks_absent_stages_and_unselected_drives(self):
+        model = PairCNN(self.definitions,channels=(8,8,16,16),hidden=32)
+        output = model(torch.randn(2,1,64,64),torch.randn(2,1,64,64))
+        self.assertEqual(output['logits'].shape,(2,7))
+        self.assertNotIn('presence',output)
+        batch = {'label':torch.zeros(2,dtype=torch.long),
+                 'distance':torch.ones(2,2),
+                 'active':{t:torch.full((2,),t==DRIVES[0]) for t in self.definitions},
+                 'knobs':{t:torch.zeros(2,len(continuous(d))) for t,d in self.definitions.items()}}
+        first,_ = supervised_loss(output,batch)
+        altered = copy.deepcopy(batch)
+        altered['knobs'][DRIVES[1]][:] = 1e5
+        second,_ = supervised_loss(output,altered)
+        torch.testing.assert_close(first,second)
+        first.backward()
+        self.assertIsNone(model.knobs[DRIVES[1]].weight.grad)
+        self.assertIsNotNone(model.knobs[DRIVES[0]].weight.grad)
+        self.assertIsNotNone(model.distance.weight.grad)
+
+    def test_encoder_fusion_topology_is_preserved_and_audio_rates_match(self):
         model = PairCNN(self.definitions)
-        with torch.inference_mode():
-            output = model(torch.from_numpy(mel)[None], torch.from_numpy(mel)[None])
-        self.assertEqual(output['logits'].shape, (1, 4))
-        self.assertEqual(output['continuous']['fuzz'].shape, (1, 3))
+        convs = [m for m in model.encoder if isinstance(m,torch.nn.Conv2d)]
+        self.assertEqual([m.out_channels for m in convs],[8,16,32,64])
+        self.assertEqual(model.fusion[0].in_features,1024)
+        self.assertEqual(model.fusion[0].out_features,256)
+        self.assertEqual(model.classifier.out_features,7)
+        self.assertFalse(hasattr(model,'presence'))
+        self.assertEqual(set(model.knobs),set(DRIVES))
+        self.assertEqual(AudioConfig().sample_rate,44100)
 
-    def test_masked_loss_ignores_inactive_heads_and_bypass(self):
-        model = PairCNN(self.definitions)
-        output = model(torch.randn(3, 1, 32, 48), torch.randn(3, 1, 32, 48))
-        knobs = {t: torch.zeros(3, len(continuous(d))) for t, d in self.definitions.items()}
-        labels = torch.tensor([0, 0, 0])
-        loss, stats = masked_loss(output, labels, knobs, {}, self.definitions, model.classes)
-        self.assertEqual(stats['knob_huber'], 0)
-        loss.backward()
-        for head in model.knobs.values():
-            self.assertIsNone(head.weight.grad)
-        labels = torch.tensor([1, 0, 1])
-        first, _ = masked_loss(output, labels, knobs, {}, self.definitions, model.classes)
-        altered = {t: x.clone() for t, x in knobs.items()}
-        altered['distortion'][:] = 1e4
-        altered['overdrive'][1] = 1e4
-        second, _ = masked_loss(output, labels, altered, {}, self.definitions, model.classes)
-        torch.testing.assert_close(first, second)
+    def test_old_mixed_checkpoint_is_rejected(self):
+        from estimation.infer import load_predictor
+        with tempfile.TemporaryDirectory() as folder:
+            checkpoint = Path(folder)/'old.pt'
+            torch.save({'format_version':2},checkpoint)
+            with self.assertRaisesRegex(ValueError,'drive-only'):
+                load_predictor(checkpoint)
 
-    def test_classification_and_regression_use_separate_heads_and_losses(self):
-        dry, wet = torch.randn(3, 1, 32, 48), torch.randn(3, 1, 32, 48)
-        classifier = PairCNN(self.definitions, task='classification', include_bypass=False)
-        prediction = classifier(dry, wet)
-        self.assertEqual(classifier.classes, ['overdrive', 'distortion', 'fuzz'])
-        self.assertEqual(prediction['logits'].shape, (3, 3))
-        self.assertEqual(prediction['continuous'], {})
-        loss, stats = masked_loss(prediction, torch.tensor([0, 1, 2]), {}, {},
-                                  classifier.definitions, classifier.classes)
-        self.assertEqual(stats['knob_huber'], 0)
-        loss.backward()
-        self.assertIsNotNone(classifier.classifier.weight.grad)
-        regressor = PairCNN(self.definitions, task='regression', effect_types=['overdrive'], include_bypass=False)
-        prediction = regressor(dry, wet)
-        self.assertIsNone(prediction['logits'])
-        self.assertEqual(set(prediction['continuous']), {'overdrive'})
-        target = {'overdrive': torch.zeros(3, 2)}
-        loss, stats = masked_loss(prediction, torch.zeros(3, dtype=torch.long), target, {},
-                                  regressor.definitions, regressor.classes)
-        self.assertEqual(stats['classification'], 0)
-        loss.backward()
-        self.assertIsNotNone(regressor.knobs['overdrive'].weight.grad)
+    def test_unprocessed_or_silent_pairs_are_rejected(self):
+        from estimation.audio import validate_rendered_pair
+        dry = np.sin(np.arange(4096)*.1).astype('float32')*.2
+        with self.assertRaisesRegex(ValueError,'pass-through'):
+            validate_rendered_pair(dry,dry.copy(),'bad_vst')
+        with self.assertRaisesRegex(ValueError,'Silent VST'):
+            validate_rendered_pair(dry,np.zeros_like(dry),'bad_vst')
+        self.assertGreater(validate_rendered_pair(dry,dry*.7)['max_change_from_dry'],0)
 
-    def test_task_datasets_share_exact_overdrive_pairs_and_splits(self):
+    def test_import_uses_render_input_and_cache_works_without_shared_drive(self):
         import soundfile as sf
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            sources = []
+            source = root/'generated'
+            for folder in ('audio','labels','dry'):
+                (source/folder).mkdir(parents=True,exist_ok=True)
+            mappings = []
             for i in range(3):
-                path = root / f'take{i}.wav'
-                sf.write(path, self.dry * (1 + i * 0.1), self.sr, subtype='FLOAT')
-                sources.append({'recording_id': str(i), 'file_path': str(path)})
-            manifest = prepare(sources, root / 'classification', self.config, variations=2,
-                               task='classification', include_bypass=False)
-            classification, a = load_manifest(manifest)
-            self.assertEqual(len(classification), 18)
-            self.assertNotIn('bypass', a['classes'])
-            regression, b = load_manifest(overdrive_subset(manifest, root / 'regression'))
-            self.assertEqual(len(regression), 6)
-            self.assertEqual(b['task'], 'regression')
-            self.assertEqual(b['classes'], ['overdrive'])
-            self.assertEqual(a['splits'], b['splits'])
-            source = {r['sample_id']: r for r in classification}
-            for row in regression:
-                original = source[row['sample_id']]
-                self.assertEqual(row['split'], original['split'])
-                self.assertEqual(Path(row['wet_path']).read_bytes(), Path(original['wet_path']).read_bytes())
-
-    def test_fresh_renderer_and_class_ambiguity(self):
-        # At zero tone gain, the distinct PeakFilter frequencies disappear.
-        settings = [('overdrive', {'drive': 12, 'level': 0}),
-                    ('distortion', {'dist': 12, 'tone': 0, 'level': 0}),
-                    ('fuzz', {'fuzz': 12, 'tone': 0, 'level': 0})]
-        audios = [render_chain(self.dry, self.sr, chain_instance(t, v)) for t, v in settings]
-        np.testing.assert_allclose(audios[0], audios[1], atol=2e-6)
-        np.testing.assert_allclose(audios[0], audios[2], atol=2e-6)
-        render_chain(self.dry * 0.8, self.sr, chain_instance('fuzz'))
-        again = render_chain(self.dry, self.sr, chain_instance('overdrive', settings[0][1]))
-        np.testing.assert_array_equal(audios[0], again)
-
-    def test_cma_budget_and_bypass_fast_path(self):
-        reference = render_chain(self.dry, self.sr, chain_instance('overdrive', {'drive': 10, 'level': -2}))
-        candidates = [candidate('overdrive', 0.8), candidate('bypass', 0.2)]
-        result = refine_candidates(self.dry, reference, self.sr, candidates, budget=11)
-        self.assertEqual(result['render_evaluations'], 11)
-        self.assertLessEqual(result['distance'], result['initial_best_distance'])
-        bypass = refine_candidates(self.dry, self.dry, self.sr, [candidate('bypass', 1)], budget=11)
-        self.assertEqual(bypass['render_evaluations'], 1)
-        self.assertEqual(bypass['distance'], 0)
-        with self.assertRaises(ValueError):
-            refine_candidates(self.dry, reference, self.sr, candidates, budget=1)
-
-    def test_manifest_reproduction_and_rejects_split_leakage(self):
-        import soundfile as sf
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            sources = []
-            for i in range(3):
-                path = root / f'take{i}.wav'
-                sf.write(path, self.dry * (1 + i * 0.1), self.sr, subtype='FLOAT')
-                sources.append({'recording_id': f'take{i}', 'file_path': str(path)})
-            manifest = prepare(sources, root / 'prepared', self.config, variations=1)
-            rows, _ = load_manifest(manifest)
-            self.assertEqual(len(rows), 12)
-            for row in rows:
-                dry, _ = sf.read(row['dry_path'], dtype='float32')
-                wet, _ = sf.read(row['wet_path'], dtype='float32')
-                np.testing.assert_array_equal(wet, render_chain(dry, self.sr, row['ground_truth_chain']))
-            serialized = [json.loads(line) for line in manifest.read_text().splitlines()]
-            serialized[1]['split'] = 'test' if serialized[0]['split'] != 'test' else 'train'
-            manifest.write_text('\n'.join(json.dumps(r) for r in serialized))
-            with self.assertRaises(ValueError):
-                load_manifest(manifest)
+                x = np.sin(2*np.pi*(150+17*i)*np.arange(4800)/8000).astype('float32')
+                x *= 10**(-12/20)/np.max(np.abs(x))
+                relative = f'dry/source{i}.wav'
+                sf.write(source/relative,x,8000,subtype='FLOAT')
+                mappings.append({'dry_sample_id':f'dry{i}','namespace':'guitar',
+                                 'relative_path':f'source{i}.wav','render_input':relative})
+                for drive in DRIVES:
+                    name = f'wet{i}_{drive}'
+                    values = self.prediction()['values'][drive]
+                    label = {'target_id':name,'dry_sample_id':f'dry{i}',
+                             'file_path':'Z:/other-computer/not-readable.wav',
+                             'ground_truth_chain':{'amp_id':'fixed_amp_v1','chain':[
+                                 {'effect_type':drive,'values':values}]}}
+                    (source/'labels'/f'{name}.json').write_text(json.dumps(label),encoding='utf-8')
+                    sf.write(source/'audio'/f'{name}.wav',x*.7,8000,subtype='FLOAT')
+            manifest = {'drives':list(DRIVES),'dry_peak_db':-12,'completed_pairs':21,
+                        'dry_id_map':mappings}
+            (source/'manifest.json').write_text(json.dumps(manifest),encoding='utf-8')
+            config = AudioConfig(sample_rate=8000,duration_sec=.6,n_fft=256,hop_length=64,n_mels=32)
+            cache = prepare(source,root/'cache',config=config)
+            source.rename(root/'unavailable_source')
+            dataset = PairDataset(cache,'train')
+            self.assertEqual(len(dataset),7)
+            batch = dataset[0]
+            self.assertEqual(batch['dry'].shape[0:2],(1,32))
+            self.assertTrue(torch.isfinite(batch['distance']).all())
+            self.assertTrue((cache/'native_dry'/'dry0.npy').exists())
+            dataset.close()
 
 
-if __name__ == '__main__':
+if __name__=='__main__':
     unittest.main()
