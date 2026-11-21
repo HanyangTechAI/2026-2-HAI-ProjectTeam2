@@ -57,6 +57,10 @@
     },
     "fixed": {
       "const": true
+    },
+    "gain_db": {
+      "type": "number",
+      "description": "앰프(IR) 뒤에 더하는 고정 음량 보정. IR을 거치면 줄어드는 음량을 되돌립니다."
     }
   },
   "allOf": [

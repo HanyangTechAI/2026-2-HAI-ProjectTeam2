@@ -104,7 +104,7 @@ class Generator:
         self._validate_config()
         self.warnings = [
             "Temporary experiment policy; team has not finalized chain order/probabilities.",
-            "amp_id is metadata only; the team renderer does not process an amp yet.",
+            f"amp '{self.amp['amp_id']}' ({self.amp['render_method']}) is applied after the chain by the team renderer.",
             "No loudness rejection or clipping correction is performed on wet audio.",
         ]
         if config.dry_peak_db is None:

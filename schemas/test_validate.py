@@ -56,7 +56,8 @@ class ValidationTests(unittest.TestCase):
             self.check("target_sample", target)
 
     def test_amp_constraints(self):
-        for update in ({"fixed": False}, {"render_method": "impulse_response"}, {"render_method": "nam_capture"}):
+        for update in ({"fixed": False}, {"file_path": None}, {"render_method": "nam_capture", "file_path": None},
+                       {"gain_db": "loud"}):
             with self.subTest(update=update), self.assertRaises(ValidationError):
                 self.check("amp", self.data["amp"] | update)
 

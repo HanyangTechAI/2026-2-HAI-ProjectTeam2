@@ -20,7 +20,7 @@ import soundfile as sf
 from effects import render_chain
 from schemas.validate import validate_chain
 from scripts import generate_step1_dataset as step1
-from effects.render import find_plugin
+from effects.render import find_plugin, load_amp
 
 # Pedalboard-only settings: rendering tests run on every PC (no VST plugin needed).
 PB_DRIVES = ("overdrive", "distortion", "fuzz")
@@ -34,6 +34,24 @@ def has_plugin():
         return True
     except FileNotFoundError:
         return False
+
+
+_IR_DIR = None
+
+
+def setUpModule():
+    """렌더러가 앰프 IR을 찾도록 임시 IR(단순 임펄스)을 만들어 HAI_IR_DIR로 지정합니다 (공유 드라이브 불필요)."""
+    global _IR_DIR
+    _IR_DIR = tempfile.TemporaryDirectory()
+    ir_path = Path(_IR_DIR.name) / load_amp()["file_path"]
+    ir_path.parent.mkdir(parents=True, exist_ok=True)
+    sf.write(ir_path, np.r_[1.0, np.zeros(255)].astype(np.float32), 48000, subtype="FLOAT")
+    os.environ["HAI_IR_DIR"] = _IR_DIR.name
+
+
+def tearDownModule():
+    os.environ.pop("HAI_IR_DIR", None)
+    _IR_DIR.cleanup()
 
 
 class ChainTests(unittest.TestCase):
@@ -199,7 +217,7 @@ class LocalPlanTests(unittest.TestCase):
             plan.generator.validator.validate(label)
             self.assertEqual(set(label), {"target_id", "is_synthetic", "dry_sample_id",
                                          "ground_truth_chain", "source_dataset", "file_path"})
-            self.assertEqual(label["ground_truth_chain"]["amp_id"], "fixed_amp_v1")
+            self.assertEqual(label["ground_truth_chain"]["amp_id"], load_amp()["amp_id"])
 
     def test_same_settings_reproduce_labels(self):
         self.assertEqual(list(self.plan().items()), list(self.plan().items()))

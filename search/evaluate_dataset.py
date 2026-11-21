@@ -218,6 +218,10 @@ def evaluate_dataset(
             predictions_json=predictions_json,
         )
 
+        # 앰프는 탐색 대상이 아닌 고정값 → 후보도 정답과 같은 앰프로 렌더링
+        for c in candidates:
+            c["chain"]["amp_id"] = gt_chain.get("amp_id", "fixed_amp_v1")
+
         cand_drives = [c["effect_type"] for c in candidates]
         in_top_k = gt_drive in cand_drives
 

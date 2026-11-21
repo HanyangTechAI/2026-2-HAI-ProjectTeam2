@@ -1,7 +1,8 @@
 {
-  "amp_id": "fixed_amp_v1",
+  "amp_id": "marshall_v30_ir_v1",
   "reference_amp": null,
-  "render_method": "pedalboard_synthetic",
-  "file_path": null,
-  "fixed": true
+  "render_method": "impulse_response",
+  "file_path": "Marshall 4x12 V30 IR/EV MIX B.wav",
+  "fixed": true,
+  "gain_db": 12.5
 }

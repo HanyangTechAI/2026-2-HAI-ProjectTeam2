@@ -61,6 +61,7 @@ Thumbs.db
 /data/raw
 /data/dry/*/audio/
 /data/synthetic/*/
+/data/IR
 
 # 실행 결과물 (search/pipeline.py 등)
 /outputs/

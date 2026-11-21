@@ -97,6 +97,56 @@ class RenderChainTest(unittest.TestCase):
                                    {"effect_type": "808_scream", "values": values}])
 
 
+class AmpRenderTest(unittest.TestCase):
+    """앰프(캐비닛 IR) 적용. 임시 IR 파일을 만들어 쓰므로 공유 드라이브 없이 실행됩니다."""
+
+    def setUp(self):
+        import os
+        import tempfile
+        import soundfile as sf
+
+        self.tmp = tempfile.TemporaryDirectory()
+        ir = np.zeros(2400, dtype=np.float32)
+        ir[0], ir[40], ir[400] = 1.0, 0.4, -0.2
+        sf.write(os.path.join(self.tmp.name, "test_ir.wav"), ir, 48000, subtype="FLOAT")
+        self.amp = {"amp_id": "test_ir", "reference_amp": None, "render_method": "impulse_response",
+                    "file_path": "test_ir.wav", "fixed": True, "gain_db": 6.0}
+        self.old_env = os.environ.get("HAI_IR_DIR")
+        os.environ["HAI_IR_DIR"] = self.tmp.name
+        self.items = [{"effect_type": "overdrive", "values": OD}]
+
+    def tearDown(self):
+        import os
+
+        if self.old_env is None:
+            os.environ.pop("HAI_IR_DIR", None)
+        else:
+            os.environ["HAI_IR_DIR"] = self.old_env
+        self.tmp.cleanup()
+
+    def test_ir_applied_after_chain_with_gain(self):
+        from pedalboard import Convolution
+
+        dry_wet = render_chain(DRY, SR, self.items)
+        expected = Pedalboard([Convolution(impulse_response_filename=f"{self.tmp.name}/test_ir.wav"),
+                               Gain(gain_db=6.0)])(dry_wet, SR, reset=True)
+        got = render_chain(DRY, SR, {"amp_id": "test_ir", "chain": self.items}, amp=self.amp)
+        np.testing.assert_allclose(got, expected, atol=1e-6)
+        self.assertGreater(np.max(np.abs(got - dry_wet)), 1e-3)
+
+    def test_no_amp_for_step1_id_and_plain_list(self):
+        plain = render_chain(DRY, SR, self.items)
+        np.testing.assert_array_equal(
+            render_chain(DRY, SR, {"amp_id": "fixed_amp_v1", "chain": self.items}, amp=self.amp), plain)
+
+    def test_unknown_amp_and_missing_ir_rejected(self):
+        with self.assertRaises(ValueError):
+            render_chain(DRY, SR, {"amp_id": "other_amp", "chain": self.items}, amp=self.amp)
+        with self.assertRaises(FileNotFoundError):
+            render_chain(DRY, SR, {"amp_id": "test_ir", "chain": self.items},
+                         amp=dict(self.amp, file_path="missing.wav"))
+
+
 @unittest.skipUnless(has_plugin(), "MultiDrive PRO 플러그인이 없는 PC")
 class VstRenderTest(unittest.TestCase):
     def vst_effects(self):

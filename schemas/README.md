@@ -17,7 +17,7 @@
 - composite 이펙터의 `composite_of` 배열 순서는 처리 순서입니다.
 - `fixed_params`에는 탐색하지 않는 고정값을 `"클래스.속성"` 키로 적습니다. 예: 디스토션 tone 필터의 중심 주파수 `PeakFilter.cutoff_frequency_hz`. 클래스는 `composite_of`(또는 `class_name`)에 있어야 합니다.
 - continuous 파라미터의 `scale`은 `[0, 1]` 정규화와 탐색에 쓰는 눈금입니다. 생략하면 `linear`이고, 범위가 넓은 시간·비율·주파수 값은 `log`를 씁니다. `log`는 범위가 양수여야 합니다.
-- 체인의 `chain` 배열은 이펙터의 상대적인 적용 순서입니다. 앰프는 `amp_id`로 별도 지정하며 MVP 렌더러는 드라이브 뒤, EQ 앞에 적용할 예정입니다. 현재 스키마는 특정 체인 순서나 길이를 강제하지 않습니다.
+- 체인의 `chain` 배열은 이펙터의 상대적인 적용 순서입니다. 앰프는 `amp_id`로 별도 지정하며, 렌더러가 체인 맨 끝에 적용합니다(현재: 캐비닛 IR + `gain_db` 음량 보정, `amp.data.json`). Step 1 값 `fixed_amp_v1`은 앰프 없음으로 처리합니다. 현재 스키마는 특정 체인 순서나 길이를 강제하지 않습니다.
 - 체인의 `values`에는 해당 이펙터의 모든 파라미터를 명시합니다. 기본값 자동 채우기는 수행하지 않습니다.
 - 앰프의 `fixed`는 반드시 `true`입니다. `impulse_response`와 `nam_capture`는 비어 있지 않은 `file_path`가 필요하고, `pedalboard_synthetic`은 `null`을 허용합니다.
 - 합성 타겟은 `dry_sample_id`와 `ground_truth_chain`이 필수입니다. 실제 음원 타겟은 `source_dataset`이 필수이며, dry 참조와 정답 체인은 생략하거나 `null`로 둡니다.

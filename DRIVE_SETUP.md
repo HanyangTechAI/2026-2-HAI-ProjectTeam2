@@ -49,6 +49,7 @@ pip install -r requirements.txt
 mklink /J data\raw "<드라이브 경로>\data\raw"
 mklink /J data\dry\Fender_Strat_Clean\audio "<드라이브 경로>\data\dry\Fender_Strat_Clean\audio"
 mklink /J data\synthetic\Fender_Strat_Clean "<드라이브 경로>\data\synthetic\Fender_Strat_Clean"
+mklink /J data\IR "<드라이브 경로>\data\IR"
 ```
 
 **Mac**
@@ -58,6 +59,7 @@ DRIVE="<드라이브 경로>"
 ln -s "$DRIVE/data/raw" data/raw
 ln -s "$DRIVE/data/dry/Fender_Strat_Clean/audio" data/dry/Fender_Strat_Clean/audio
 ln -s "$DRIVE/data/synthetic/Fender_Strat_Clean" data/synthetic/Fender_Strat_Clean
+ln -s "$DRIVE/data/IR" data/IR
 ```
 
 > "이미 있는 파일" 오류가 나면, 저장소에 같은 이름의 폴더가 이미 있는 것입니다. 그 폴더를 지우거나 이름을 바꾼 뒤 다시 실행하세요.
