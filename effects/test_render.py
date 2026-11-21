@@ -90,6 +90,30 @@ class RenderChainTest(unittest.TestCase):
         with self.assertRaises(NotImplementedError):
             build_effect("nam_od", {"drive": 0.5}, effects)
 
+    def test_vst_passthrough_is_retried_then_rejected(self):
+        # 플러그인이 입력을 그대로 내보내면 다시 렌더링하고, 계속 그러면 오류를 냅니다.
+        from unittest.mock import patch
+        import effects.render as render
+
+        values = defaults(load_effects()["808_scream"])
+        passthrough = lambda audio, *a, **k: np.asarray(audio, dtype=np.float32)
+        calls = []
+
+        def flaky(audio, *a, **k):
+            calls.append(1)
+            audio = np.asarray(audio, dtype=np.float32)
+            return audio if len(calls) <= 2 else audio * 0.5  # 1회차(warmup+본 렌더)는 통과, 2회차는 정상
+
+        fake = type("FakeBoard", (), {"append": lambda self, p: None})
+        with patch.object(render, "build_effect", return_value=[object()]), \
+                patch("pedalboard.Pedalboard", lambda: type("B", (fake,), {"__call__": staticmethod(flaky)})()):
+            out = render_chain(DRY, SR, [{"effect_type": "808_scream", "values": values}])
+        np.testing.assert_allclose(out, DRY * 0.5)
+        with patch.object(render, "build_effect", return_value=[object()]), \
+                patch("pedalboard.Pedalboard", lambda: type("B", (fake,), {"__call__": staticmethod(passthrough)})()), \
+                self.assertRaises(RuntimeError):
+            render_chain(DRY, SR, [{"effect_type": "808_scream", "values": values}])
+
     def test_same_vst_twice_in_chain_rejected(self):
         values = defaults(load_effects()["808_scream"])
         with self.assertRaises(ValueError):

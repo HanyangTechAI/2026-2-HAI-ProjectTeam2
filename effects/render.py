@@ -41,6 +41,9 @@ PLUGIN_DIRS = (
 VST_BUFFER_SIZE = 2048
 # 외부 플러그인이 들어간 체인은 렌더링 전에 이 길이의 무음을 먼저 통과시킵니다 (render_chain 참고)
 VST_WARMUP_SECONDS = 0.5
+# 외부 플러그인이 이펙트 없이 입력을 그대로 내보냈다고 보는 기준(최대 차이)과 다시 렌더링하는 횟수
+VST_PASSTHROUGH_TOLERANCE = 1e-6
+VST_PASSTHROUGH_RETRIES = 2
 
 
 @lru_cache(maxsize=None)
@@ -233,7 +236,15 @@ def _render_effects(audio, sample_rate, chain, effects=None):
     # - 기본 버퍼(8192)에서는 첫 블록이 무음이 되고 소리도 달라지므로 VST_BUFFER_SIZE로 처리합니다.
     # - 직전에 처리한 다른 모델의 상태가 남아 앞부분 소리가 달라지므로 (b_drive 최대 50%),
     #   무음으로 먼저 통과시킨 뒤 상태를 초기화하지 않고(reset=False) 이어서 렌더링합니다.
+    # - 드물게 플러그인이 이펙트 없이 입력을 그대로 내보냅니다 (2,730개 중 5개, 280개 중 1개 관측).
+    #   뒤에 앰프(IR)가 붙으면 겉보기로는 구분되지 않으므로, 앰프 전에 확인하고 다시 렌더링합니다.
     audio = np.asarray(audio, dtype=np.float32)
     silence = np.zeros((*audio.shape[:-1], int(VST_WARMUP_SECONDS * sample_rate)), dtype=np.float32)
-    board(silence, sample_rate, buffer_size=VST_BUFFER_SIZE, reset=True)
-    return board(audio, sample_rate, buffer_size=VST_BUFFER_SIZE, reset=False)
+    for _ in range(VST_PASSTHROUGH_RETRIES + 1):
+        board(silence, sample_rate, buffer_size=VST_BUFFER_SIZE, reset=True)
+        out = board(audio, sample_rate, buffer_size=VST_BUFFER_SIZE, reset=False)
+        if out.shape != audio.shape or np.max(np.abs(out - audio)) > VST_PASSTHROUGH_TOLERANCE:
+            return out
+    raise RuntimeError(
+        f"외부 플러그인이 이펙트 없이 소리를 통과시켰습니다 ({vst_types}, {VST_PASSTHROUGH_RETRIES + 1}회 시도). "
+        "체험판·라이선스 활성화 상태를 확인하세요.")
