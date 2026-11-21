@@ -21,6 +21,7 @@ import numpy as np
 import soundfile as sf
 
 from effects.render import apply_amp, load_amp, NO_AMP_IDS
+from scripts.generate_step1_dataset import amp_context_fields
 
 
 def main(argv=None):
@@ -63,6 +64,7 @@ def main(argv=None):
 
     manifest["amp_id"] = amp["amp_id"]
     manifest["amp"] = amp
+    manifest.update(amp_context_fields(amp["amp_id"]))  # CNN(estimation) 호환
     manifest["source_dataset_dir"] = src.name
     manifest["output"] = str(dst)
     manifest["warnings"] = [w for w in manifest.get("warnings", []) if "amp" not in w] + [

@@ -420,6 +420,9 @@ class LocalPlanTests(unittest.TestCase):
             self.assertEqual(sr, out_sr)
         self.assertEqual(manifest["completed_pairs"], 3)
         self.assertEqual(len(manifest["dry_id_map"]), 1)
+        # CNN(estimation) reads the amp context from the manifest.
+        from estimation.amp import context_from_record
+        self.assertEqual(context_from_record(manifest)["amp_id"], manifest["amp_id"])
         self.assertEqual(len(list(plan.output.rglob("*.*"))), 8)
 
     def test_real_renderer_all_combinations_and_drives(self):

@@ -402,10 +402,23 @@ class Plan:
                                     # dry actually fed to the renderer (mono 44.1 kHz copy, scaled if dry_peak_db)
                                     "render_input": f"dry/{s.name}.wav"}
                                    for s in self.sources]}
+        # CNN(estimation)이 IR 데이터로 인정하도록 앰프 정의 + IR 파일 hash를 기록
+        manifest.update(amp_context_fields(self.generator.amp["amp_id"]))
         _check_plain_path(self.output)
         with (self.output / "manifest.json").open("x", encoding="utf-8", newline="\n") as stream:
             stream.write(_json(manifest) + "\n")
         return manifest
+
+
+def amp_context_fields(amp_id):
+    """manifest에 넣을 앰프 정보. estimation.amp와 같은 형식(amp_context + hash)입니다."""
+    from estimation.amp import NO_AMP, current_context, no_amp
+    from estimation.chain import fingerprint
+
+    context = no_amp() if amp_id == NO_AMP else current_context()
+    if context["amp_id"] != amp_id:
+        raise ValueError(f"amp_id {amp_id}가 현재 schemas/amp.data.json({context['amp_id']})과 다릅니다.")
+    return {"amp_context": context, "amp_context_hash": fingerprint(context)}
 
 
 def main(argv=None):
