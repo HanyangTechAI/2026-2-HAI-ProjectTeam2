@@ -66,7 +66,8 @@ class RenderChainTest(unittest.TestCase):
             Compressor(**comp),
             HighpassFilter(cutoff_frequency_hz=200.0), Distortion(drive_db=30.0),
             LowpassFilter(cutoff_frequency_hz=4000.0), Gain(gain_db=-1.0),
-            LowShelfFilter(gain_db=3.0), PeakFilter(cutoff_frequency_hz=1500.0, gain_db=-2.0), HighShelfFilter(gain_db=1.0),
+            LowShelfFilter(cutoff_frequency_hz=250.0, gain_db=3.0), PeakFilter(cutoff_frequency_hz=1500.0, gain_db=-2.0),
+            HighShelfFilter(cutoff_frequency_hz=4000.0, gain_db=1.0),
         ]))
 
     def test_every_pedalboard_effect_builds_with_defaults(self):
