@@ -1,6 +1,7 @@
 # MultiDrive PRO 7종 전용 CNN
 
 생성 Dry/목표 Wet으로 드라이브 7종과 해당 드라이브의 노브 초기값을 예측한다.
+고정 캐비닛 IR을 포함하는 데이터·checkpoint도 지원한다. 캐비닛은 학습 대상으로 예측하지 않고 고정 렌더 문맥으로 전달한다.
 컴프레서·EQ는 데이터 생성, 학습 출력, 추론 후보, 렌더링에서 사용하지 않는다.
 
 - 모델: 808_scream, b_drive, o_drive, one_distortion, bat_distortion, f_fuzz, m_fuzz.
@@ -31,6 +32,9 @@
 | refine.py | CNN 후보를 main CMA-ES API에 전달하고 예산 내 최선 후보 선택 |
 | cma_experiment.py | 동일 후보에서 CNN 시작·기본값 시작 CMA-ES 비교 |
 | generate_drive_only.py | native Dry 캐시에서 현재 VST 전용 데이터 생성·전수 검사 보조 |
+| amp.py | 고정 캐비닛 정의·IR 해시와 구형 no-amp 모델 호환 검사 |
+| amp_dataset.py | 기존 bare Wet에 공용 캐비닛 처리만 추가해 통제 비교 데이터 생성 |
+| domain_experiment.py | 합성 test의 전후 비교, 정답 없는 Demucs 목표 톤 탐색·WAV·시간 저장 |
 
 팀 공용 생성기·렌더러·스키마·거리·탐색 구현은 각각 `scripts/`, `effects/`,
 `schemas/`, `metrics/`, `search/`에 유지한다.
@@ -64,7 +68,9 @@ best 모델은 전체 validation loss로 선택하고 test로 선택하지 않�
 
 main의 `effects.render.render_chain`을 그대로 사용한다.
 모델·표본율별 플러그인을 로드하고, buffer=2048, 무음 warmup=0.5초 후 렌더링한다.
-입력 게인은 0 dB 고정이며 앰프는 처리하지 않는다.
+입력 게인은 0 dB 고정이다. 이전 checkpoint는 앰프를 처리하지 않으며,
+캐비닛 포함 checkpoint는 저장된 IR 정의·게인·해시로 처리한다.
+VST 출력을 캐비닛 적용 전에 검사하여 IR만으로 bypass가 가려지는 것을 막는다.
 활성 상태와 정답 노브 재현 오차를 별도로 검사한다. UI/체험판을 자동으로 열지 않는다.
 평가 중 일시적 무음/Dry 통과가 발생하면 최대 3회 안에서 재시도하고 횟수를 기록한다.
 CMA-ES adapter에서는 잘못된 출력을 거리로 사용하지 않고 오류로 전파한다.
@@ -133,6 +139,7 @@ seed·예산·실행 수·목적함수 d는 동일하다. 종류 후보는 고�
 
 `tests/test_estimation.py`는 단일 VST 라벨·원본별 분할·CNN 구조·과거 checkpoint 거부를,
 `tests/test_cnn_cma.py`는 main CMA API·좌표·예산·초기값 보존·재현성을 검사한다.
+`tests/test_amp_context.py`는 IR 문맥의 무결성·후보 전달·캐비닛 이전의 VST bypass 거부를 검사한다.
 
 ```powershell
 .\.conda-cnn\python.exe -m pytest tests/test_estimation.py tests/test_cnn_cma.py metrics/test_combined.py metrics/test_dynamics.py -k 'not CompressorIntegration' -q
@@ -152,3 +159,36 @@ matplotlib 부재 경고는 선택적 `cma.plot()`에 관한 것으로 탐색에
 두 번째는 CMA 예산·탐색 이력·노브 오차·평균값을 검사하고 결과 문서의 CMA 표를 갱신한다.
 JSON·로그는 `outputs/vst7_drive_only/`에 재검증 원자료로 보존한다.
 모든 실험 설정·수치·해석은 [EXPERIMENTS.md](EXPERIMENTS.md)에서만 관리한다.
+
+## 고정 캐비닛 재학습과 Demucs 비교
+
+`schemas/amp.data.json`의 현재 앰프는 Marshall 4×12 V30 캐비닛 IR과 +12.5 dB 고정 게인이다.
+IR은 `data/IR/Marshall 4x12 V30 IR/EV MIX B.wav` 또는 `HAI_IR_DIR` 아래에 둔다.
+비선형 앰프·여러 앰프 종류·앰프 노브는 학습하지 않는다.
+
+```powershell
+# 기존 bare 생성본/모델의 노브 정의를 고정하고 Wet에 캐비닛만 추가
+.\.conda-cnn\python.exe -u -m estimation.amp_dataset `
+  --source data/synthetic/vst7_drive_only --output data/synthetic/vst7_amp_ir `
+  --checkpoint outputs/vst7_drive_only/model/best.pt
+
+.\.conda-cnn\python.exe -u -m estimation.experiments `
+  --dataset data/synthetic/vst7_amp_ir --output outputs/vst7_amp_ir --epochs 30
+
+.\.conda-cnn\python.exe -u -m estimation.domain_experiment `
+  --old outputs/vst7_drive_only/model/best.pt --new outputs/vst7_amp_ir/model/best.pt `
+  --bare-cache outputs/vst7_drive_only/dataset --amp-cache outputs/vst7_amp_ir/dataset `
+  --targets Demucs/output --output outputs/vst7_amp_ir/domain_comparison_blas1 --k 3 --budget 90
+```
+
+새 생성·학습에는 새 출력 폴더를 사용한다. 마지막 비교 명령은 같은 계획/hash의 완료 표본을 이어서 사용할 수 있다.
+합성 test는 같은 Dry·노브·분할의 bare/캐비닛 데이터에서 기존/새 모델을 교차 평가한다.
+Demucs/output에는 대응 Dry·정답 체인이 없으므로 공통 합성 Dry를 사용한 목표 톤 탐색으로만 비교한다.
+연주·음정·분리 아티팩트가 다르므로 그 d를 실제 녹음의 정확도나 일반화 성능으로 해석하지 않는다.
+각 트랙에서 사전에 고른 RMS 최대 2.5초 구간, 공통 Dry, 초기/탐색 WAV와 시간·d를 저장한다.
+비교용 d scale은 기존 모델의 train-only 값 하나로 고정한다. K1/예산30은 K3/예산90의 첫 후보 블록을 계측한다.
+거리 라이브러리를 준비한 뒤 BLAS 스레드를 제한한다. main 엔진이 출력 검사 실패를 페널티 처리한 경우,
+adapter의 유효 점수 개수와 실제 렌더 시도 수가 다를 수 있어 로그와 함께 집계한다.
+최종 WAV·후보·hash·평균값·실패 호출 재검사는 `python outputs/vst7_amp_ir/audit_results.py`로 수행한다.
+캐비닛 모델의 CNN 추론에는 checkpoint와 같은 버전의 코드가 필요하고,
+실제 렌더링에는 저장된 해시와 일치하는 IR 파일 및 활성화된 VST가 추가로 필요하다.

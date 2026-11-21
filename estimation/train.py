@@ -73,6 +73,9 @@ def train(cache, output, epochs=30, batch_size=16, learning_rate=1e-3,
     loaders = {s:DataLoader(d,batch_size=batch_size,shuffle=s=='train',num_workers=0,
                              generator=torch.Generator().manual_seed(seed)) for s,d in datasets.items()}
     model = PairCNN(metadata['catalog'])
+    from .amp import context_from_record
+    from .chain import fingerprint
+    model.amp_context = context_from_record(metadata)
     optimizer = torch.optim.Adam(model.parameters(),lr=learning_rate)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer,T_max=epochs,eta_min=learning_rate*.05)
     output = Path(output)
@@ -102,6 +105,7 @@ def train(cache, output, epochs=30, batch_size=16, learning_rate=1e-3,
         record['seconds'] = time.perf_counter()-start
         history.append(record)
         checkpoint = {'format_version':3,'chain_policy':'single_vst_drive_only',
+                      'amp_context':model.amp_context,'amp_context_hash':fingerprint(model.amp_context),
                       'data_quality_policy':metadata['data_quality_policy'],
                       'source_render_audit_sha256':metadata['source_render_audit_sha256'],
                       'state_dict':model.state_dict(),'epoch':epoch,

@@ -16,6 +16,7 @@ from .evaluate import render_subset
 from .infer import decode, load_predictor
 from .refine import default_candidates, refine_candidates, to_search_inputs
 from .renderer import activation_preflight as preflight
+from .amp import context_from_record
 
 
 def run(cache='outputs/step1_vst_v1/dataset', checkpoint='outputs/step1_vst_v1/model/best.pt',
@@ -31,6 +32,8 @@ def run(cache='outputs/step1_vst_v1/dataset', checkpoint='outputs/step1_vst_v1/m
         raise ValueError('samples must be positive or -1 for all')
     rows, metadata = load_manifest(cache)
     model, config, state = load_predictor(checkpoint)
+    if context_from_record(state) != context_from_record(metadata):
+        raise ValueError('Checkpoint/cache amp contexts disagree')
     if any(state[key] != metadata[key] for key in
            ('source_manifest_sha256', 'source_render_audit_sha256', 'catalog_hash', 'audio_config', 'distance_settings')):
         raise ValueError('Checkpoint and cache provenance/preprocessing/distance settings disagree')
@@ -57,7 +60,7 @@ def run(cache='outputs/step1_vst_v1/dataset', checkpoint='outputs/step1_vst_v1/m
         for row in chosen:
             a = torch.from_numpy(dry_features[row['dry_index']].copy())[None]
             b = torch.from_numpy(wet_features[row['wet_index']].copy())[None]
-            prediction = decode(model(a,b), 0, model.definitions, state['distance_settings'])
+            prediction = decode(model(a,b), 0, model.definitions, state['distance_settings'],model.amp_context['amp_id'])
             candidates = make_candidates(prediction, k=k, definitions=model.definitions)
             search_inputs = to_search_inputs(candidates, model.definitions)
             tasks.append({'sample_id': row['sample_id'], 'recording_id': row['recording_id'],
@@ -67,6 +70,7 @@ def run(cache='outputs/step1_vst_v1/dataset', checkpoint='outputs/step1_vst_v1/m
                           'truth_drive': row['drive'], 'prediction': prediction,
                           'candidates': candidates, 'search_candidate_configs': search_inputs})
     plan = {'format_version': 1, 'status': 'prepared', 'split': split, 'sample_count': len(tasks),
+            'amp_context':model.amp_context,
             'sample_policy': policy, 'samples_by_drive': {d: sum(t['truth_drive']==d for t in tasks) for d in DRIVES},
             'originals': len({t['recording_id'] for t in tasks}),
             'checkpoint': str(checkpoint.resolve()), 'checkpoint_epoch': state['epoch'],
@@ -91,7 +95,7 @@ def run(cache='outputs/step1_vst_v1/dataset', checkpoint='outputs/step1_vst_v1/m
         return plan
     from .renderer import Renderer
     import librosa
-    renderer = Renderer(model.definitions)
+    renderer = Renderer(model.definitions,model.amp_context)
     first = tasks[0]
     native = np.load(cache/'native_dry'/f"{first['dry_sample_id']}.npy")
     status = preflight(renderer, native, first['source']['source_rate'], model.definitions)

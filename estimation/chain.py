@@ -94,7 +94,7 @@ def make_candidates(prediction, owned_effect_types=None, k=3, definitions=None):
                                   normalized_bounds=[0.0, 1.0]))
             items.append({'effect_type': name, 'values': dict(values)})
         candidates.append({'effect_type': drive, 'model_score': float(probabilities[drive]),
-                           'chain': {'amp_id': 'fixed_amp_v1', 'chain': items},
+                           'chain': {'amp_id': prediction.get('amp_id','fixed_amp_v1'), 'chain': items},
                            'x0': vector, 'vector_spec': specs})
     return candidates
 

@@ -4,13 +4,14 @@ from pathlib import Path
 import numpy as np
 
 from .chain import DRIVES, catalog, continuous
+from .amp import no_amp, verify_ir, NO_AMP
 
 
 def activation_preflight(renderer, dry, rate, definitions):
     """Fresh checks of all bare drives; never open UI or activate a trial."""
     checks = []
     for drive in DRIVES:
-        chain = {'amp_id': 'fixed_amp_v1', 'chain': [{'effect_type': drive,
+        chain = {'amp_id': getattr(renderer,'amp_context',no_amp())['amp_id'], 'chain': [{'effect_type': drive,
                  'values': {p['name']: p['default'] for p in continuous(definitions[drive])}}]}
         wave = np.asarray(renderer(dry, rate, chain))
         if wave.shape != dry.shape or not np.isfinite(wave).all():
@@ -25,21 +26,28 @@ def activation_preflight(renderer, dry, rate, definitions):
 
 
 class Renderer:
-    def __init__(self, definitions=None):
+    def __init__(self, definitions=None, amp_context=None):
         from effects.render import find_plugin
         self.definitions = definitions or catalog()
         if set(self.definitions) != set(DRIVES):
             raise ValueError('Renderer expects the seven drive-only definitions')
         self.plugin_file = find_plugin('MultiDrivePro')
+        self.amp_context = verify_ir(amp_context or no_amp())
 
     def __call__(self, dry, rate, chain):
-        from effects.render import render_chain
+        from effects.render import render_chain, apply_amp
         from .data import validate_chain
-        validate_chain(chain,self.definitions)
+        validate_chain(chain,self.definitions,self.amp_context['amp_id'])
         # Use main's model/rate-specific loading, 2048 buffer and 0.5 s warmup.
-        audio = np.asarray(render_chain(dry,rate,chain,effects=self.definitions),dtype=np.float32)
+        bare_chain = dict(chain,amp_id=NO_AMP)
+        audio = np.asarray(render_chain(dry,rate,bare_chain,effects=self.definitions),dtype=np.float32)
         from .audio import validate_rendered_pair
         validate_rendered_pair(dry,audio)
+        # Check the VST BEFORE IR: a cabinet alone must not mask a bypassed VST.
+        if self.amp_context['amp_id'] != NO_AMP:
+            audio = np.asarray(apply_amp(audio,rate,self.amp_context['amp_id'],
+                                        amp=self.amp_context['definition']),dtype=np.float32)
+            validate_rendered_pair(dry,audio)
         return audio
 
 
@@ -59,7 +67,8 @@ def main():
     path = root/source['render_input']
     dry,rate = sf.read(path,dtype='float32',always_2d=True)
     dry = dry[:,0] if dry.shape[1]==1 else dry.T
-    renderer = Renderer()
+    from .amp import context_from_record
+    renderer = Renderer(amp_context=context_from_record(manifest))
     records = []
     for drive in DRIVES:
         name = 'wet_'+Path(source['render_input']).stem+'_'+drive+'_001'
@@ -67,7 +76,7 @@ def main():
         target,sr = sf.read(root/'audio'/f'{name}.wav',dtype='float32')
         actual = renderer(dry,rate,label['ground_truth_chain'])
         repeated = renderer(dry,rate,label['ground_truth_chain'])
-        fresh = Renderer()(dry,rate,label['ground_truth_chain'])
+        fresh = Renderer(amp_context=renderer.amp_context)(dry,rate,label['ground_truth_chain'])
         if sr!=rate or target.shape!=actual.shape:
             raise ValueError('Source/target native format mismatch')
         from scipy.signal import correlate

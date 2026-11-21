@@ -1,5 +1,6 @@
 """Drive-only CNN candidates using main's CMA-ES API without editing search/."""
 import copy
+import time
 
 import numpy as np
 
@@ -77,9 +78,15 @@ def refine_candidates(native_dry, reference, native_rate, config, candidates, bu
         raise ValueError('Invalid reference segment')
     if not np.isfinite(native_dry).all():
         raise ValueError('Non-finite Dry')
+    # SciPy loads another BLAS library lazily: initialize metrics before
+    # limiting pools, otherwise that library retains its default threads.
+    compare(reference,reference,native_rate,settings)
+    from threadpoolctl import threadpool_limits
+    threadpool_limits(limits=1,user_api='blas')
     shares = [budget//len(candidates)+int(i<budget%len(candidates)) for i in range(len(candidates))]
     ranked, initial = [], []
     for index,(item,share) in enumerate(zip(candidates,shares)):
+        candidate_started = time.perf_counter()
         spec = DriveParameterSpec([item['effect_type']],definitions,item['chain']['amp_id'])
         distances, rendered_chains = [], []
 
@@ -110,6 +117,7 @@ def refine_candidates(native_dry, reference, native_rate, config, candidates, bu
         candidate['chain'] = rendered_chains[best]
         candidate['x0'] = spec.normalize(spec.chain_to_vector(candidate['chain'])).tolist()
         ranked.append({'candidate':candidate,'distance':distances[best],
+                       'seconds':time.perf_counter()-candidate_started,
                        'initial_distance':distances[0],'render_evaluations':len(distances),
                        'render_budget':share,'seed':seed+index,
                        'history_combined_d':np.minimum.accumulate([d['combined'] for d in distances]).tolist()})
@@ -121,4 +129,5 @@ def refine_candidates(native_dry, reference, native_rate, config, candidates, bu
             'render_evaluations':sum(r['render_evaluations'] for r in ranked),
             'render_budget':budget,'restarts':restarts,'seed':seed,
             'engine':'search.pipeline.run_cma_es_for_chain (main x0_norm API)',
+            'blas_threads':1,'distance_warmup':'reference/reference, no VST render',
             'distance_settings':settings,'native_render_rate':native_rate}

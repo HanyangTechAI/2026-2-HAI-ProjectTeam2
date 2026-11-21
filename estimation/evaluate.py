@@ -39,7 +39,8 @@ class AudioEvaluation:
         self.target = np.load(self.cache/'wet_audio.npy',mmap_mode='r')
         self.dry = np.load(self.cache/'dry_audio.npy',mmap_mode='r')
         self.sources = {r['dry_sample_id']:r for r in self.metadata['dry_sources']}
-        self.renderer = Renderer(self.metadata['catalog'])
+        from .amp import context_from_record
+        self.renderer = Renderer(self.metadata['catalog'],context_from_record(self.metadata))
         self.render_attempts = 0
         self.transient_retries = 0
 
@@ -94,7 +95,8 @@ def renderer_status(cache,refresh=False):
         activation_checks = []
         for drive in DRIVES:
             values = {p['name']:p['default'] for p in continuous(evaluator.metadata['catalog'][drive])}
-            audio = evaluator.renderer(native,source_rate,{'chain':[{'effect_type':drive,'values':values}]})
+            audio = evaluator.renderer(native,source_rate,{'amp_id':evaluator.renderer.amp_context['amp_id'],
+                                                          'chain':[{'effect_type':drive,'values':values}]})
             activation_checks.append({'drive':drive,'max_change_from_dry':float(np.max(np.abs(audio-native))),
                                       'output_peak':float(np.max(np.abs(audio)))})
         active = all(p['max_change_from_dry']>1e-7 and p['output_peak']>1e-7 for p in activation_checks)
@@ -132,7 +134,7 @@ def render_validation_probe(model,cache,limit=14):
         output = model(batch['dry'],batch['wet'])
         for i,idx in enumerate(selected):
             row = dataset.rows[idx]
-            prediction = decode(output,i,model.definitions)
+            prediction = decode(output,i,model.definitions,amp_id=model.amp_context['amp_id'])
             candidate = make_candidates(prediction,k=1,definitions=model.definitions)[0]
             score = evaluator.score(row,candidate['chain'])
             baseline = copy.deepcopy(candidate['chain'])
@@ -179,6 +181,9 @@ def evaluate(cache,checkpoint,output,split='test',batch_size=16,render_samples=7
     torch.set_num_threads(4)
     model,config,state = load_predictor(checkpoint)
     dataset = PairDataset(cache,split)
+    from .amp import context_from_record
+    if model.amp_context != context_from_record(dataset.metadata):
+        raise ValueError('Checkpoint/cache amp contexts disagree')
     selected_for_render = render_subset(dataset.rows,render_samples)
     if (state['source_manifest_sha256']!=dataset.metadata['source_manifest_sha256'] or
             state.get('source_render_audit_sha256')!=dataset.metadata['source_render_audit_sha256'] or
@@ -197,7 +202,7 @@ def evaluate(cache,checkpoint,output,split='test',batch_size=16,render_samples=7
             result = model(batch['dry'],batch['wet'])
             for i in range(len(batch['label'])):
                 row = dataset.rows[offset]
-                prediction = decode(result,i,model.definitions,state['distance_settings'])
+                prediction = decode(result,i,model.definitions,state['distance_settings'],model.amp_context['amp_id'])
                 candidates = make_candidates(prediction,k=3,definitions=model.definitions)
                 truth_items = {p['effect_type']:p['values'] for p in row['ground_truth_chain']['chain']}
                 for t,values in truth_items.items():

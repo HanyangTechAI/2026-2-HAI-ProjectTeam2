@@ -14,6 +14,7 @@ from torch.utils.data import Dataset
 from .audio import AudioConfig, log_mel, read_audio, segment, validate_rendered_pair
 from .chain import DRIVES, catalog, continuous, fingerprint, normalize
 from .distance import calibrate, raw_distances
+from .amp import context_from_record
 
 
 def write_json(path, value):
@@ -36,7 +37,9 @@ def split_recordings(ids, seed=42):
             for i, rid in enumerate(unique)}
 
 
-def validate_chain(chain, definitions):
+def validate_chain(chain, definitions, amp_id=None):
+    if amp_id is not None and chain.get('amp_id','fixed_amp_v1') != amp_id:
+        raise ValueError('Chain amp does not match the dataset/checkpoint context')
     items = chain['chain']
     drives = [p['effect_type'] for p in items if p['effect_type'] in DRIVES]
     if len(drives) != 1:
@@ -61,11 +64,16 @@ def prepare(dataset, output, seed=42, config=None):
     manifest_path = dataset / 'manifest.json'
     manifest_bytes = manifest_path.read_bytes()
     manifest = json.loads(manifest_bytes)
+    amp_context = context_from_record(manifest)
+    if manifest.get('amp_id','fixed_amp_v1') != amp_context['amp_id']:
+        raise ValueError('Dataset amp metadata is missing or inconsistent')
     audit_path = dataset/'render_audit.json'
     audit_hash = hashlib.sha256(audit_path.read_bytes()).hexdigest() if audit_path.exists() else None
     if set(manifest.get('drives', [])) != set(DRIVES) or manifest.get('dry_peak_db') != -12:
         raise ValueError('Expected canonical VST7 dataset with -12 dBFS generated dry')
-    definitions = catalog()
+    definitions = manifest.get('catalog') or catalog()
+    if set(definitions) != set(DRIVES) or ('catalog' in manifest and manifest.get('catalog_hash') != fingerprint(definitions)):
+        raise ValueError('Invalid frozen effect catalog')
     mappings = manifest['dry_id_map']
     dry_map = {r['dry_sample_id']: r for r in mappings}
     if len(dry_map) != len(mappings):
@@ -85,7 +93,7 @@ def prepare(dataset, output, seed=42, config=None):
     for path,label in zip(label_files,loaded_labels):
         if path.stem != label['target_id'] or label['dry_sample_id'] not in dry_map:
             raise ValueError(f'Invalid target/dry identity: {path.name}')
-        drive = validate_chain(label['ground_truth_chain'], definitions)
+        drive = validate_chain(label['ground_truth_chain'], definitions, amp_context['amp_id'])
         rid = groups[label['dry_sample_id']]
         records.append({'sample_id': label['target_id'], 'dry_sample_id': label['dry_sample_id'],
                         'recording_id': rid, 'split': splits[rid], 'drive': drive,
@@ -166,6 +174,7 @@ def prepare(dataset, output, seed=42, config=None):
         array.flush()
     settings = calibrate(distances, [i for i, r in enumerate(records) if r['split'] == 'train'])
     metadata = {'format_version': 3, 'chain_policy': 'single_vst_drive_only',
+                'amp_context':amp_context,'amp_context_hash':fingerprint(amp_context),
                 'data_quality_policy':'non_silent_non_passthrough_v1',
                 'source_render_audit_sha256':audit_hash,
                 'dataset_root': str(dataset), 'seed': seed,
@@ -204,6 +213,7 @@ def load_manifest(cache):
     cache = Path(cache)
     metadata = json.loads((cache/'dataset.json').read_text(encoding='utf-8'))
     rows = [json.loads(line) for line in (cache/'manifest.jsonl').read_text(encoding='utf-8').splitlines()]
+    amp_context = context_from_record(metadata)
     if (metadata['format_version'] != 3 or metadata.get('chain_policy') != 'single_vst_drive_only'
             or metadata.get('data_quality_policy') != 'non_silent_non_passthrough_v1'
             or set(metadata['catalog']) != set(DRIVES)
@@ -215,7 +225,7 @@ def load_manifest(cache):
         if hashes.setdefault(r['sha256'], s) != s:
             raise ValueError('Dry-content leakage')
     for row in rows:
-        validate_chain(row['ground_truth_chain'],metadata['catalog'])
+        validate_chain(row['ground_truth_chain'],metadata['catalog'],amp_context['amp_id'])
         if (seen.setdefault(row['recording_id'], row['split']) != row['split'] or
                 metadata['splits'][row['recording_id']] != row['split']):
             raise ValueError('Original-recording split leakage')

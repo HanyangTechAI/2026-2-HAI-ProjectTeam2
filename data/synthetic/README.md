@@ -10,6 +10,10 @@
 - 이전 컴프·EQ 혼합 데이터의 로컬 연결은 제거했습니다. 공유 드라이브 원본은 보존합니다.
 - 현재 학습·평가 결과는 `outputs/vst7_drive_only/`에 있습니다.
 
+- `vst7_amp_ir/`: 같은 2,730쌍의 bare Wet에 공용 Marshall V30 캐비닛 IR과 고정 게인만 추가한 비교용 생성본입니다.
+  Dry·노브·원본 분할은 유지하고, 기존 checkpoint의 이펙터 정의와 IR hash를 기록합니다.
+  결과는 `outputs/vst7_amp_ir/`에 저장하며, 두 데이터셋을 서로 덮어쓰지 않습니다.
+
 팀 공용 `search.pipeline`과 `search.evaluate_dataset`을 직접 실행할 때는
 `--dataset data/synthetic/vst7_drive_only`를 지정하세요. 공용 코드의 기본 경로는 이전
 공유 데이터 이름이므로, 로컬 연결을 제거한 현재 환경에서는 명시적인 경로가 필요합니다.
