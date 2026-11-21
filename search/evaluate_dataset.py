@@ -13,10 +13,10 @@ import time
 import argparse
 from pathlib import Path
 import numpy as np
-import soundfile as sf
 
 from effects import load_effects
 from effects.render import find_plugin
+from effects.audio_io import read_mono
 from estimation.chain import DRIVES, catalog, make_candidates
 from search.pipeline import (
     DEFAULT_DATASET_DIR,
@@ -199,12 +199,9 @@ def evaluate_dataset(
             continue
 
         wet_path = wet_candidates[0]
-        dry, sr = sf.read(str(dry_path), dtype="float32")
-        wet_target, _ = sf.read(str(wet_path), dtype="float32")
-        if dry.ndim > 1:
-            dry = dry.mean(axis=1)
-        if wet_target.ndim > 1:
-            wet_target = wet_target.mean(axis=1)
+        # 팀 공통 형식(모노 44.1 kHz)으로 읽기 → dry와 목표 소리의 샘플레이트가 항상 같음
+        dry, sr = read_mono(dry_path)
+        wet_target, _ = read_mono(wet_path)
 
         # 핵심 수정: 정답(gt_etypes)을 후보에 강제로 넣지 않고 CNN 상위 K개 후보만 생성
         candidates, cand_mode = get_cnn_top_k_candidates(

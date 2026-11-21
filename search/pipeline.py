@@ -14,10 +14,10 @@ import time
 import argparse
 from pathlib import Path
 import numpy as np
-import soundfile as sf
 import cma
 
 from effects import load_effects, render_chain
+from effects.audio_io import read_mono
 from metrics.spectral import spectral_distance
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -501,9 +501,7 @@ def load_generated_dry_sample(dataset_dir=None, duration_sec=1.0):
         )
 
     path = wav_files[0]
-    audio, sr = sf.read(str(path), dtype="float32")
-    if audio.ndim > 1:
-        audio = audio.mean(axis=1)
+    audio, sr = read_mono(path)  # 팀 공통 형식: 모노 44.1 kHz
 
     win = int(sr * duration_sec)
     if len(audio) > win:
@@ -591,7 +589,7 @@ def run_search_pipeline(budget=40, n_restarts=2, n_seeds=1, dataset_path=None, i
         "chain": [
             {
                 "effect_type": "808_scream",
-                "values": {"level": 50.0, "overdrive": 70.0, "tone": 40.0},
+                "values": {"level": 53.0, "overdrive": 70.0, "tone": 40.0},  # 볼륨 보정 후 범위(51–55) 안
             }
         ],
     }

@@ -178,7 +178,9 @@ def find_ir(file_path):
 
 
 @lru_cache(maxsize=None)
-def _ir_board(ir_path, gain_db):
+def _ir_board(ir_path, gain_db, sample_rate):
+    """IR은 처리 샘플레이트에 맞춰 내부에서 변환되므로, VST처럼 샘플레이트마다 따로 둡니다.
+    (하나를 여러 샘플레이트에 번갈아 쓰면 결과가 미세하게 달라짐)"""
     from pedalboard import Convolution, Gain, Pedalboard
 
     return Pedalboard([Convolution(impulse_response_filename=ir_path), Gain(gain_db=gain_db)])
@@ -197,7 +199,7 @@ def apply_amp(audio, sample_rate, amp_id, amp=None):
         raise ValueError(f"알 수 없는 amp_id: {amp_id} (현재 앰프: {amp['amp_id']})")
     if amp["render_method"] != "impulse_response":
         raise NotImplementedError(f"앰프 방식 '{amp['render_method']}'는 아직 지원하지 않습니다.")
-    board = _ir_board(find_ir(amp["file_path"]), float(amp.get("gain_db", 0.0)))
+    board = _ir_board(find_ir(amp["file_path"]), float(amp.get("gain_db", 0.0)), int(sample_rate))
     return board(np.asarray(audio, dtype=np.float32), sample_rate, reset=True)
 
 

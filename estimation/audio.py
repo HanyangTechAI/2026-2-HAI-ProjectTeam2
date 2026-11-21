@@ -34,19 +34,10 @@ class AudioConfig:
 
 
 def read_audio(path, sample_rate):
-    import soundfile as sf
+    """Team-wide mono reader (effects.audio_io.read_mono); returns the audio only."""
+    from effects.audio_io import read_mono
 
-    audio, sr = sf.read(path, dtype='float32', always_2d=True)
-    if not audio.size or not np.isfinite(audio).all():
-        raise ValueError(f'Empty or non-finite audio: {path}')
-    audio = audio.mean(axis=1)
-    if sr != sample_rate:
-        import librosa
-
-        audio = librosa.resample(audio, orig_sr=sr, target_sr=sample_rate)
-    if not np.isfinite(audio).all():
-        raise ValueError(f'Invalid resampled audio: {path}')
-    return np.ascontiguousarray(audio, dtype=np.float32)
+    return read_mono(path, sample_rate)[0]
 
 
 def segment(audio, config, start_sample=0, reject_silence=True):

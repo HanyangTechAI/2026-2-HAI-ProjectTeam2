@@ -20,6 +20,7 @@ import soundfile as sf
 from effects import render_chain
 from schemas.validate import validate_chain
 from scripts import generate_step1_dataset as step1
+from effects.audio_io import read_mono
 from effects.render import find_plugin, load_amp
 
 # Pedalboard-only settings: rendering tests run on every PC (no VST plugin needed).
@@ -292,7 +293,7 @@ class LocalPlanTests(unittest.TestCase):
             step1.main(["--dry-input", "guitar_a", str(self.dry), "--output", str(out)])
         summary = json.loads(stdout.getvalue())
         self.assertEqual(summary["mode"], "dry-run")
-        self.assertEqual(summary["total_output_files"], 3)
+        self.assertEqual(summary["total_output_files"], 4)  # wav + label + dry + manifest
         self.assertEqual(before, sorted(self.root.rglob("*")))
 
     def test_explicit_dry_run_without_output(self):
@@ -395,7 +396,7 @@ class LocalPlanTests(unittest.TestCase):
     def test_plan_reports_counts_output_and_sources(self):
         summary = self.plan(config=replace(PB, variations=7), output=self.root / "out").summary()
         self.assertEqual((summary["wav_files"], summary["label_files"], summary["total_output_files"]),
-                         (7, 7, 15))
+                         (7, 7, 16))  # + dry 1 + manifest 1
         self.assertEqual(len(summary["preview_labels"]), 3)
         self.assertEqual(summary["dry_sources"], 1)
         self.assertIn(str(self.root / "out"), summary["output"])
@@ -406,7 +407,9 @@ class LocalPlanTests(unittest.TestCase):
             manifest = plan.execute()
         labels = [label for _, label in plan.items()]
         self.assertEqual(renderer.call_count, 3)
-        dry, sr = sf.read(self.dry / "same.wav", dtype="float32", always_2d=True)
+        # The renderer input is the saved mono 44.1 kHz dry, not the 16 kHz source file.
+        dry, sr = sf.read(plan.output / manifest["dry_id_map"][0]["render_input"], dtype="float32", always_2d=True)
+        self.assertEqual((sr, dry.shape[1]), (44100, 1))
         for call, label in zip(renderer.call_args_list, labels):
             self.assertEqual(call.args[2], label["ground_truth_chain"])
             stored = json.loads((plan.output / "labels" / (label["target_id"] + ".json")).read_text("utf-8"))
@@ -417,7 +420,7 @@ class LocalPlanTests(unittest.TestCase):
             self.assertEqual(sr, out_sr)
         self.assertEqual(manifest["completed_pairs"], 3)
         self.assertEqual(len(manifest["dry_id_map"]), 1)
-        self.assertEqual(len(list(plan.output.rglob("*.*"))), 7)
+        self.assertEqual(len(list(plan.output.rglob("*.*"))), 8)
 
     def test_real_renderer_all_combinations_and_drives(self):
         for drive in ("overdrive", "distortion", "fuzz"):
@@ -429,15 +432,19 @@ class LocalPlanTests(unittest.TestCase):
                     out = self.root / f"{drive}-{comp}-{eq}"
                     self.assertEqual(self.plan(config=config, output=out).execute()["completed_pairs"], 1)
 
-    def test_stereo_channel_layout_preserved(self):
+    def test_stereo_input_becomes_mono_44k(self):
         stereo = np.column_stack([self.wave, .5 * self.wave])
         sf.write(self.dry / "same.wav", stereo, self.sr, subtype="FLOAT")
         plan = self.plan(output=self.root / "out")
-        plan.execute()
+        manifest = plan.execute()
         label = next(plan.items())[1]
+        dry, dry_sr = sf.read(plan.output / manifest["dry_id_map"][0]["render_input"], dtype="float32",
+                              always_2d=True)
+        expected_dry, _ = read_mono(self.dry / "same.wav")  # channel average, resampled
+        np.testing.assert_allclose(dry[:, 0], expected_dry, atol=1e-7)
         output, sr = sf.read(label["file_path"], dtype="float32", always_2d=True)
-        np.testing.assert_array_equal(output, render_chain(stereo.T, sr, label["ground_truth_chain"]).T)
-        self.assertEqual(output.shape, stereo.shape)
+        self.assertEqual((sr, dry_sr, output.shape[1]), (44100, 44100, 1))
+        np.testing.assert_array_equal(output, render_chain(dry.T.copy(), sr, label["ground_truth_chain"]).T)
 
     def test_nonfinite_renderer_output_rejected(self):
         plan = self.plan(output=self.root / "out")

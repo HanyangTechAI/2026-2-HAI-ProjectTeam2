@@ -25,6 +25,7 @@ if __package__ in (None, ""):
 from jsonschema import Draft202012Validator
 
 from effects import build_effect, render_chain
+from effects.audio_io import STANDARD_SAMPLE_RATE, read_mono
 from schemas.validate import load_schemas, validate_chain, validate_effects
 
 
@@ -107,6 +108,7 @@ class Generator:
             f"amp '{self.amp['amp_id']}' ({self.amp['render_method']}) is applied after the chain by the team renderer.",
             "No loudness rejection or clipping correction is performed on wet audio.",
         ]
+        self.warnings.append(f"Dry is converted to mono {STANDARD_SAMPLE_RATE} Hz before rendering (saved in dry/).")
         if config.dry_peak_db is None:
             self.warnings.append("Dry audio is rendered at its original level (no --dry-peak-db).")
         for name in config.effects:
@@ -345,9 +347,8 @@ class Plan:
             "drives": self.generator.drives(),
             "dry_sources": len(self.sources), "pairs": pairs,
             "wav_files": pairs, "label_files": pairs, "manifest_files": 1,
-            "dry_files": len(self.sources) if self.generator.config.dry_peak_db is not None else 0,
-            "total_output_files": 2 * pairs + 1 + (len(self.sources) if self.generator.config.dry_peak_db
-                                                   is not None else 0),
+            "dry_files": len(self.sources),
+            "total_output_files": 2 * pairs + 1 + len(self.sources),
             "output": str(self.output) if self.output else "<OUTPUT> (not specified)",
             "inputs": self.inputs, "warnings": self.generator.warnings,
             "preview_labels": examples,
@@ -364,24 +365,21 @@ class Plan:
         self.output.mkdir(parents=True, exist_ok=False)
         (self.output / "audio").mkdir()
         (self.output / "labels").mkdir()
-        normalized = self.generator.config.dry_peak_db is not None
-        if normalized:
-            (self.output / "dry").mkdir()
+        (self.output / "dry").mkdir()
         completed, current_path = 0, None
         for source, label in self.items():
             if source.path != current_path:
-                audio, sr = sf.read(source.path, dtype="float32", always_2d=True)
-                if not audio.size or audio.shape[1] not in (1, 2) or not np.isfinite(audio).all():
-                    raise ValueError(f"input must be nonempty finite mono/stereo WAV: {source.path}")
-                dry = np.ascontiguousarray(audio.T)  # renderer expects channels x samples
+                # Team input format: mono, 44.1 kHz (effects.audio_io); stereo is averaged.
+                audio, sr = read_mono(source.path)
+                dry = audio[np.newaxis, :]  # renderer expects channels x samples
                 peak = float(np.max(np.abs(dry)))
                 if self.generator.config.dry_peak_db is not None and peak > 0:
                     # Same input level for every dry, so drive amount depends on knobs, not recording level.
                     dry = (dry * (10 ** (self.generator.config.dry_peak_db / 20) / peak)).astype(np.float32)
-                    # Save the scaled dry: search/training must start from the same audio as the renderer.
-                    _check_plain_path(self.output / "dry")
-                    with (self.output / "dry" / f"{source.name}.wav").open("xb") as stream:
-                        sf.write(stream, dry.T, sr, format="WAV", subtype="FLOAT")
+                # Save the rendered dry: search/training must start from the same audio as the renderer.
+                _check_plain_path(self.output / "dry")
+                with (self.output / "dry" / f"{source.name}.wav").open("xb") as stream:
+                    sf.write(stream, dry.T, sr, format="WAV", subtype="FLOAT")
                 current_path = source.path
             chain = label["ground_truth_chain"]
             # Pass a copy; the saved ground truth remains independent of renderer mutation.
@@ -401,8 +399,8 @@ class Plan:
         manifest = {**self.summary(), "completed_pairs": completed,
                     "dry_id_map": [{"dry_sample_id": s.dry_id, "namespace": s.namespace,
                                     "relative_path": s.relative_path, "input_path": str(s.path),
-                                    # dry actually fed to the renderer (scaled copy when dry_peak_db is set)
-                                    "render_input": (f"dry/{s.name}.wav" if normalized else str(s.path))}
+                                    # dry actually fed to the renderer (mono 44.1 kHz copy, scaled if dry_peak_db)
+                                    "render_input": f"dry/{s.name}.wav"}
                                    for s in self.sources]}
         _check_plain_path(self.output)
         with (self.output / "manifest.json").open("x", encoding="utf-8", newline="\n") as stream:
