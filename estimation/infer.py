@@ -9,6 +9,7 @@ from .audio import AudioConfig, log_mel, read_audio, segment
 from .chain import DRIVES, continuous, denormalize, fingerprint, make_candidates
 from .cnn import PairCNN
 from .data import write_json
+from .amp import context_from_record, no_amp
 
 
 def load_predictor(checkpoint, device='cpu'):
@@ -21,11 +22,12 @@ def load_predictor(checkpoint, device='cpu'):
         raise ValueError('Expected drive-only VST7 format_version=3 checkpoint')
     model = PairCNN(state['catalog'], **state['model_config']).to(device)
     model.load_state_dict(state['state_dict'])
+    model.amp_context = context_from_record(state)
     model.eval()
     return model, AudioConfig(**state['audio_config']), state
 
 
-def decode(output, index, definitions, settings=None):
+def decode(output, index, definitions, settings=None, amp_id='fixed_amp_v1'):
     result = {'probabilities': dict(zip(DRIVES, output['logits'][index].softmax(0).tolist())),
               'values': {t: {p['name']: denormalize(float(v), p)
                              for p,v in zip(continuous(d), output['knobs'][t][index])}
@@ -38,6 +40,7 @@ def decode(output, index, definitions, settings=None):
             'dynamics': values[1]*settings['dynamics_scale'],
             'combined': (values[0]+values[1])/2,
             'scope': 'estimate of d(input dry, reference); NOT a rendered candidate score'}
+    result['amp_id'] = amp_id
     return result
 
 
@@ -47,7 +50,8 @@ def predict_pair(model, config, dry, reference, settings=None):
     a = torch.from_numpy(log_mel(dry, config))[None].to(device)
     b = torch.from_numpy(log_mel(reference, config))[None].to(device)
     with torch.inference_mode():
-        result = decode(model(a,b), 0, model.definitions, settings)
+        result = decode(model(a,b), 0, model.definitions, settings,
+                        getattr(model,'amp_context',no_amp())['amp_id'])
     result['inference_seconds'] = time.perf_counter()-start
     return result
 
@@ -81,13 +85,14 @@ def main():
     result['generated_dry_path'] = args.dry
     result['format_version'] = 3
     result['distance_settings'] = state['distance_settings']
+    result['amp_context'] = model.amp_context
     result['native_render_rate'] = rate
     if args.refine_budget is not None:
         from .refine import refine_candidates
         from .renderer import Renderer, activation_preflight
         if not result['candidates'] or args.refine_budget < len(result['candidates']):
             raise ValueError('Refinement requires at least one render per candidate')
-        renderer = Renderer(model.definitions)
+        renderer = Renderer(model.definitions,model.amp_context)
         status = activation_preflight(renderer, native, rate, model.definitions)
         if not status['available']:
             raise RuntimeError('VST activation check failed: dry pass-through or silence')
