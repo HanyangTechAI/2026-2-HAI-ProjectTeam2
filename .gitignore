@@ -62,6 +62,8 @@ Thumbs.db
 /data/dry/*/audio/
 /data/synthetic/*/
 /data/IR
+# 데이터셋 로컬 사본 (드라이브에서 복사해 빠르게 읽기용, DRIVE_SETUP.md 참고)
+/data/local/
 
 # 실행 결과물 (search/pipeline.py 등)
 /outputs/
