@@ -1,22 +1,24 @@
-# 합성 데이터
+# 합성 데이터와 현재 Step 2 데이터
 
-합성 Dry/Wet과 정답 라벨을 보관하는 폴더입니다. WAV와 대용량 결과는 Git에서 제외합니다.
+현재 CNN 학습·평가는 공유 드라이브에서 복사한 `data/local/`의 Step 2 데이터를 사용한다.
+이 `data/synthetic/` 폴더의 예전 로컬 데이터는 과거 실험용이며 현재 기본 입력이 아니다.
 
-## 현재 CNN 데이터 — VST 드라이브 전용
+| 데이터 | 현재 로컬 경로 | 용도 |
+|---|---|---|
+| step2_ir_v1 | `data/local/step2_ir_v1/` | VST 7종 + 고정 캐비닛 IR, 2,730쌍. 학습·validation·test |
+| step2_real_v1 | `data/local/step2_real_v1/` | 새로운 기타 Dry의 VST+IR 변형 280쌍, 전체 외부 평가 |
 
-- `vst7_drive_only/`: MultiDrive PRO 7종만 사용하는 로컬 새 생성본입니다. 컴프·EQ는 없습니다.
-- `dry/` 78개, `audio/` 2,730개, `labels/` 2,730개와 manifest·생성/전수 검사 기록이 있습니다.
-- 모두 44.1 kHz이며, 학습·탐색 입력은 이 생성본의 peak −12 dBFS `dry/`입니다.
-- 이전 컴프·EQ 혼합 데이터의 로컬 연결은 제거했습니다. 공유 드라이브 원본은 보존합니다.
-- 현재 학습·평가 결과는 `outputs/vst7_drive_only/`에 있습니다.
+- 학습·탐색 Dry는 각 데이터셋 `manifest.json`의 `render_input`을 사용한다. 생성 폴더의 peak −12 dBFS `dry/`다.
+- 입력은 VST 드라이브 한 개와 고정 IR 조건이며 컴프·EQ는 사용하지 않는다.
+- IR 파일은 `data/IR/`에 준비하며 checkpoint에 저장된 해시와 일치해야 한다.
+- 학습 결과·모델은 `outputs/step2_ir_v1/`, 외부 평가·탐색 결과는 `outputs/step2_real_v1/`이다.
+- 이전 `vst7_drive_only/`, `vst7_amp_ir/` 데이터·모델·결과는 이번 코드 정리에서 삭제하지 않았다.
+- 공유 원본·WAV·모델·캐시는 Git에 올리지 않는다.
 
-- `vst7_amp_ir/`: 같은 2,730쌍의 bare Wet에 공용 Marshall V30 캐비닛 IR과 고정 게인만 추가한 비교용 생성본입니다.
-  Dry·노브·원본 분할은 유지하고, 기존 checkpoint의 이펙터 정의와 IR hash를 기록합니다.
-  결과는 `outputs/vst7_amp_ir/`에 저장하며, 두 데이터셋을 서로 덮어쓰지 않습니다.
+생성이 필요하면 팀 공용 `scripts/generate_step1_dataset.py`와 `scripts/apply_amp_dataset.py`를 사용한다.
+옵션 설명은 [생성기 문서](../../scripts/STEP1_DATA_GENERATION.md)를 참고하되,
+현재 CNN용으로는 컴프·EQ를 끄고 드라이브 한 개만 사용한다.
+공유 Step 2 데이터가 있으면 로컬에서 재생성할 필요가 없다.
 
-팀 공용 `search.pipeline`과 `search.evaluate_dataset`을 직접 실행할 때는
-`--dataset data/synthetic/vst7_drive_only`를 지정하세요. 공용 코드의 기본 경로는 이전
-공유 데이터 이름이므로, 로컬 연결을 제거한 현재 환경에서는 명시적인 경로가 필요합니다.
-
-자세한 설정과 결과는 [estimation/README.md](../../estimation/README.md)와
-[실험 결과](../../estimation/EXPERIMENTS.md)를 참고하세요.
+학습·평가 명령은 [estimation/README.md](../../estimation/README.md),
+현재 결과와 이전 실험 기록은 [EXPERIMENTS.md](../../estimation/EXPERIMENTS.md)를 참고한다.

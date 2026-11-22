@@ -31,11 +31,12 @@ def classification_metrics(truth, predicted, classes=DRIVES):
 
 
 class AudioEvaluation:
-    def __init__(self,cache):
+    def __init__(self,cache,distance_settings=None):
         from .renderer import Renderer
         self.cache = Path(cache)
         self.rows,self.metadata = load_manifest(cache)
         self.config = AudioConfig(**self.metadata['audio_config'])
+        self.distance_settings = distance_settings or self.metadata['distance_settings']
         self.target = np.load(self.cache/'wet_audio.npy',mmap_mode='r')
         self.dry = np.load(self.cache/'dry_audio.npy',mmap_mode='r')
         self.sources = {r['dry_sample_id']:r for r in self.metadata['dry_sources']}
@@ -64,7 +65,7 @@ class AudioEvaluation:
 
     def score(self,row,chain):
         return compare(self.render(row,chain),self.target[row['wet_index']],
-                       self.config.sample_rate,self.metadata['distance_settings'])
+                       self.config.sample_rate,self.distance_settings)
 
 
 def renderer_status(cache,refresh=False):
@@ -177,7 +178,20 @@ def render_subset(rows,limit=70):
     return selected
 
 
-def evaluate(cache,checkpoint,output,split='test',batch_size=16,render_samples=70):
+def check_evaluation_source(state,metadata,allow_external=False):
+    """Keep schema/input checks for external data; relax only source identity."""
+    if (state['catalog_hash'] != metadata['catalog_hash'] or
+            state['audio_config'] != metadata['audio_config']):
+        raise ValueError('Checkpoint/cache schema or audio configuration differs')
+    same_source = (state['source_manifest_sha256']==metadata['source_manifest_sha256'] and
+                   state.get('source_render_audit_sha256')==metadata['source_render_audit_sha256'])
+    if not same_source and not allow_external:
+        raise ValueError('Checkpoint belongs to another source dataset; external evaluation requires --allow-external')
+    return same_source
+
+
+def evaluate(cache,checkpoint,output,split='test',batch_size=16,render_samples=70,
+             allow_external=False):
     torch.set_num_threads(4)
     model,config,state = load_predictor(checkpoint)
     dataset = PairDataset(cache,split)
@@ -185,13 +199,9 @@ def evaluate(cache,checkpoint,output,split='test',batch_size=16,render_samples=7
     if model.amp_context != context_from_record(dataset.metadata):
         raise ValueError('Checkpoint/cache amp contexts disagree')
     selected_for_render = render_subset(dataset.rows,render_samples)
-    if (state['source_manifest_sha256']!=dataset.metadata['source_manifest_sha256'] or
-            state.get('source_render_audit_sha256')!=dataset.metadata['source_render_audit_sha256'] or
-            state['catalog_hash']!=dataset.metadata['catalog_hash'] or
-            state['audio_config']!=dataset.metadata['audio_config']):
-        raise ValueError('Checkpoint belongs to another source dataset')
+    same_source = check_evaluation_source(state,dataset.metadata,allow_external)
     status = renderer_status(cache)
-    evaluator = AudioEvaluation(cache) if status['available'] else None
+    evaluator = AudioEvaluation(cache,state['distance_settings']) if status['available'] else None
     from threadpoolctl import threadpool_limits
     threadpool_limits(limits=1,user_api='blas')
     records,offset = [],0
@@ -236,6 +246,9 @@ def evaluate(cache,checkpoint,output,split='test',batch_size=16,render_samples=7
     summary = classification_metrics([r['truth'] for r in records],[r['predicted'] for r in records])
     rendered_records = [r for r in records if r['rendered_distances'] is not None]
     summary.update(split=split,samples=len(records),checkpoint_epoch=state['epoch'],
+                   external_dataset=not same_source,
+                   source_manifest_sha256=dataset.metadata['source_manifest_sha256'],
+                   training_source_manifest_sha256=state['source_manifest_sha256'],
                    original_recordings=len({r['recording_id'] for r in dataset.rows}),
                    top3_accuracy=float(np.mean([r['truth'] in [c['effect_type'] for c in r['candidates']] for r in records])),
                    conditional_normalized_knob_mae={t:float(np.mean(v)) if v else None for t,v in knob_errors.items()},
@@ -270,7 +283,9 @@ def main():
     parser.add_argument('--cache',required=True)
     parser.add_argument('--checkpoint',required=True)
     parser.add_argument('--output',required=True)
-    parser.add_argument('--split',choices=['validation','test'],default='test')
+    parser.add_argument('--split',choices=['validation','test','all'],default='test')
+    parser.add_argument('--allow-external',action='store_true',
+                        help='Evaluate a different source dataset with the frozen training schema/scales')
     parser.add_argument('--render-samples',type=int,default=70,
                         help='Class-balanced actual render comparisons; -1 for every sample')
     print(json.dumps(evaluate(**vars(parser.parse_args())),indent=2))
