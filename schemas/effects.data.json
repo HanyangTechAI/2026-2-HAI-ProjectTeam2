@@ -6,7 +6,7 @@
     "class_name": "Compressor",
     "composite_of": null,
     "params": [
-      { "name": "threshold_db", "maps_to": "Compressor.threshold_db", "type": "continuous", "unit": "dB", "range": [-60.0, 0.0], "options": null, "default": -18.0 },
+      { "name": "threshold_db", "maps_to": "Compressor.threshold_db", "type": "continuous", "unit": "dB", "range": [-60.0, -12.0], "options": null, "default": -18.0 },
       { "name": "ratio", "maps_to": "Compressor.ratio", "type": "continuous", "unit": null, "scale": "log", "range": [1.0, 20.0], "options": null, "default": 4.0 },
       { "name": "attack_ms", "maps_to": "Compressor.attack_ms", "type": "continuous", "unit": "ms", "scale": "log", "range": [0.1, 100.0], "options": null, "default": 5.0 },
       { "name": "release_ms", "maps_to": "Compressor.release_ms", "type": "continuous", "unit": "ms", "scale": "log", "range": [10.0, 1000.0], "options": null, "default": 100.0 }
