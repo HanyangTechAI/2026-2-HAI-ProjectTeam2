@@ -1,5 +1,13 @@
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
 import streamlit as st
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+SAMPLE_DIR = PROJECT_ROOT / "demo" / "samples"
 
 st.set_page_config(page_title="Tone Match · 기타 톤 데모", page_icon="🎸", layout="wide")
 
@@ -14,61 +22,228 @@ div[data-testid="stVerticalBlockBorderWrapper"] { border-radius: 16px; }
 </style>
 """, unsafe_allow_html=True)
 
-EFFECTS = {
-    "오버드라이브": {"Drive": 35, "Tone": 55, "Level": 65},
-    "디스토션": {"Gain": 55, "Tone": 50, "Level": 60},
-    "퍼즈": {"Fuzz": 60, "Tone": 45, "Level": 55},
+AVAILABLE_DRIVES = {
+    "808_scream": "808 Scream (TS808)",
+    "b_drive": "B-Drive (BD-2)",
+    "o_drive": "O-Drive (OD-1)",
+    "one_distortion": "One Distortion (DS-1)",
+    "bat_distortion": "BAT Distortion (RAT)",
+    "f_fuzz": "F-Fuzz (Fuzz Face)",
+    "m_fuzz": "M-Fuzz (Big Muff)",
 }
-AMP = {"Gain": 40, "Bass": 50, "Middle": 60, "Treble": 55, "Presence": 45, "Master": 65}
 
-st.markdown('<div class="eyebrow">GUITAR EFFECT CHAIN LAB / UI DEMO</div>', unsafe_allow_html=True)
+# VST 플러그인은 메인 스레드에서만 동작하므로 별도 프로세스로 실행
+WORKER_CODE = """
+import json, sys
+import soundfile as sf
+from effects import load_effects, render_chain
+from search.pipeline import search_and_rank_chains
+
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    req = json.load(f)
+
+dry_audio, sr = sf.read(req["dry_path"], dtype="float32")
+target_audio, _ = sf.read(req["target_path"], dtype="float32")
+if dry_audio.ndim > 1:
+    dry_audio = dry_audio.mean(axis=1)
+if target_audio.ndim > 1:
+    target_audio = target_audio.mean(axis=1)
+
+effects_def = load_effects()
+candidate_chains = [[d] for d in req["selected_inventory"]]
+
+res = search_and_rank_chains(
+    dry_audio=dry_audio,
+    sr=sr,
+    target_audio=target_audio,
+    candidate_chains=candidate_chains,
+    owned_effect_types=req["selected_inventory"],
+    effects_def=effects_def,
+    budget=req["budget"],
+    n_restarts=2,
+)
+ranked = res[0] if isinstance(res, tuple) else res
+best = ranked[0]
+
+try:
+    found_wet = render_chain(dry_audio, sr, best["chain"], effects=effects_def)
+except TypeError:
+    found_wet = render_chain(dry_audio, sr, best["chain"])
+
+sf.write(req["out_wav"], found_wet, sr)
+
+chain_data = best.get("chain", [])
+if isinstance(chain_data, dict):
+    chain_data = chain_data.get("chain", [])
+
+out = {
+    "effect_types": best["effect_types"],
+    "chain": chain_data,
+    "loss": float(best["loss"]),
+}
+with open(req["out_json"], "w", encoding="utf-8") as f:
+    json.dump(out, f, indent=2, ensure_ascii=False)
+"""
+
+
+def render_chain_cards(chain_items):
+    if not chain_items:
+        st.info("표시할 체인 정보가 없습니다.")
+        return
+    cols = st.columns(min(len(chain_items), 3))
+    for i, item in enumerate(chain_items):
+        with cols[i % len(cols)]:
+            with st.container(border=True):
+                ename = item.get("effect_type", "unknown")
+                st.markdown(f"**{i + 1:02d} · {AVAILABLE_DRIVES.get(ename, ename)}**")
+                for k, v in item.get("values", {}).items():
+                    fval = float(v)
+                    st.write(f"{k} · **{fval:.1f}**")
+                    pct = int(min(max(fval * 100 if fval <= 1.0 else fval, 0), 100))
+                    st.progress(pct)
+
+
+st.markdown('<div class="eyebrow">GUITAR EFFECT CHAIN LAB / TONE MATCH</div>', unsafe_allow_html=True)
 st.title("내 이펙터로 찾는 목표 톤")
-st.write("기타 리프와 보유 이펙터를 선택하고, 원음부터 재현 톤까지 한눈에 비교하세요.")
-st.caption("화면 프로토타입 · 오디오 재생과 톤 추정 기능은 추후 연결됩니다.")
+st.write("레퍼런스 기타 톤을 분석해 최적의 이펙터 조합과 노브 값을 역추정합니다.")
 
-with st.container(border=True):
-    st.subheader("01 · 입력 설정")
-    st.selectbox("기타 리프", ["클린 아르페지오", "블루스 리드", "록 파워 코드", "펑크 리듬"], key="riff")
-    st.write("보유 이펙터")
-    selected = []
-    for column, name in zip(st.columns(len(EFFECTS)), EFFECTS):
-        with column:
-            if st.checkbox(name, value=name == "오버드라이브", key=f"effect_{name}"):
-                selected.append(name)
+tab1, tab2 = st.tabs(["📊 빠른 청취 비교 (사전 분석)", "🔍 실시간 톤 탐색 (Local)"])
 
-st.subheader("02 · 톤 비교")
-st.caption(f"선택한 리프: {st.session_state.riff} · 각 버튼은 연결 안내만 표시합니다.")
-tracks = [
-    ("Dry · 기타 원음", "이펙터가 적용되기 전의 기타 신호", "dry"),
-    ("정답 · 목표 톤", "재현하고 싶은 기준 사운드", "target"),
-    ("결과 · 재현 톤", "추천 체인을 적용할 결과 사운드", "result"),
-]
-for column, (title, description, key) in zip(st.columns(3), tracks):
-    with column:
-        with st.container(border=True):
-            st.markdown(f"### {title}")
-            st.caption(description)
-            if st.button("▶ 재생", key=f"play_{key}", use_container_width=True):
-                st.info("오디오 연결 예정")
+# ----------------------------------------------------------------------
+# [탭 1] 빠른 청취 비교 (로컬 & Streamlit Cloud 모두 동작)
+# ----------------------------------------------------------------------
+with tab1:
+    sample_jsons = sorted(SAMPLE_DIR.glob("*_result.json")) if SAMPLE_DIR.exists() else []
+    if not sample_jsons:
+        st.warning(
+            f"시연용 샘플이 아직 없습니다. (`{SAMPLE_DIR}`)\n\n"
+            "터미널에서 아래 명령어를 실행해 샘플을 먼저 생성해 주세요:\n"
+            "`python -m search.evaluate_dataset --limit 3 --budget 60 --save_audio`"
+        )
+    else:
+        sample_ids = [f.stem.replace("_result", "") for f in sample_jsons]
+        selected_id = st.selectbox("시연 샘플 선택", sample_ids)
 
-st.subheader("03 · 추천 체인과 노브 값")
-st.info("예시 세팅 — 선택한 보유 이펙터를 고정된 순서로 나열한 화면 데모입니다. 리프나 오디오를 분석한 추정 결과가 아닙니다.")
-chain = " → ".join(["기타", *selected, "앰프 / 출력"])
-st.markdown(f'<div class="chain">{chain}</div>', unsafe_allow_html=True)
-st.write("")
-if not selected:
-    st.info("선택한 이펙터가 없어 기타를 앰프로 바로 연결합니다. 앰프 예시 세팅은 아래에 표시됩니다.")
-st.caption("모든 노브 값은 데모용 0–100 상대값입니다. 실제 장비의 단위나 범위와 다를 수 있습니다.")
-settings = [(name, EFFECTS[name]) for name in selected] + [("앰프", AMP)]
-columns = st.columns(min(len(settings), 3))
-for index, (name, knobs) in enumerate(settings):
-    with columns[index % len(columns)]:
-        with st.container(border=True):
-            st.markdown(f"**{index + 1:02d} · {name}**")
-            st.caption("예시 세팅")
-            for knob, value in knobs.items():
-                st.write(f"{knob} · **{value} / 100**")
-                st.progress(value)
+        with open(SAMPLE_DIR / f"{selected_id}_result.json", "r", encoding="utf-8") as f:
+            result_data = json.load(f)
+
+        st.subheader("01 · 톤 비교")
+        tracks = [
+            ("Dry · 기타 원음", "이펙터 적용 전 원본 기타", f"{selected_id}_dry.wav"),
+            ("정답 · 목표 톤", "재현하고 싶은 기준 사운드", f"{selected_id}_target.wav"),
+            ("결과 · AI 재현 톤", "AI 추천 체인으로 렌더링한 결과", f"{selected_id}_found.wav"),
+        ]
+        for col, (title, desc, fname) in zip(st.columns(3), tracks):
+            with col:
+                with st.container(border=True):
+                    st.markdown(f"### {title}")
+                    st.caption(desc)
+                    fpath = SAMPLE_DIR / fname
+                    if fpath.exists():
+                        st.audio(str(fpath), format="audio/wav")
+                    else:
+                        st.info(f"{fname} 없음")
+
+        st.subheader("02 · AI 추정 체인과 노브 값")
+        chain_items = result_data.get("chain", [])
+        if isinstance(chain_items, dict):
+            chain_items = chain_items.get("chain", [])
+        etypes = [AVAILABLE_DRIVES.get(item["effect_type"], item["effect_type"]) for item in chain_items]
+        chain_str = " → ".join(["기타 (Dry)"] + etypes + ["앰프 / 출력"])
+        st.markdown(f'<div class="chain">{chain_str}</div>', unsafe_allow_html=True)
+        st.write("")
+
+        m1, m2, m3 = st.columns(3)
+        if "gt_chain" in result_data:
+            m1.metric("정답 이펙터", " → ".join(result_data["gt_chain"]))
+        if "loss" in result_data:
+            m2.metric("유사도 거리 (Loss)", f"{result_data['loss']:.4f}")
+        if "elapsed_sec" in result_data:
+            m3.metric("탐색 소요 시간", f"{result_data['elapsed_sec']:.1f}초")
+
+        render_chain_cards(chain_items)
+
+# ----------------------------------------------------------------------
+# [탭 2] 실시간 톤 탐색 (로컬 전용)
+# ----------------------------------------------------------------------
+with tab2:
+    st.subheader("01 · 보유 이펙터 및 탐색 설정")
+    col_inv, col_opt = st.columns([2, 1])
+    with col_inv:
+        st.write("**보유 이펙터 선택**")
+        selected_inventory = []
+        chk_cols = st.columns(4)
+        for i, (key, label) in enumerate(AVAILABLE_DRIVES.items()):
+            if chk_cols[i % 4].checkbox(label, value=(i < 3), key=f"inv_{key}"):
+                selected_inventory.append(key)
+    with col_opt:
+        st.info("💡 **Local 전용 기능**\n\nVST 플러그인과 PyCMA가 설치된 로컬 PC에서만 동작합니다.")
+        budget = st.slider("탐색 정밀도 (Budget)", 20, 120, 40)
+
+    st.subheader("02 · 오디오 업로드 및 실시간 매칭")
+    c_up1, c_up2 = st.columns(2)
+    with c_up1:
+        dry_file = st.file_uploader("원본(Dry) 오디오 업로드 (.wav)", type=["wav"])
+    with c_up2:
+        target_file = st.file_uploader("목표(Target Wet) 오디오 업로드 (.wav)", type=["wav"])
+
+    if st.button("🚀 AI 톤 매칭 시작 (Search & Refine)", use_container_width=True):
+        if not dry_file or not target_file:
+            st.error("원본(Dry)과 목표(Target) 오디오 파일을 모두 업로드해 주세요.")
+        elif not selected_inventory:
+            st.error("최소 1개 이상의 보유 이펙터를 선택해 주세요.")
+        else:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmp_path = Path(tmpdir)
+                dry_path = tmp_path / "dry.wav"
+                tgt_path = tmp_path / "target.wav"
+                out_wav = tmp_path / "found.wav"
+                out_json = tmp_path / "result.json"
+                req_json = tmp_path / "req.json"
+
+                dry_path.write_bytes(dry_file.getvalue())
+                tgt_path.write_bytes(target_file.getvalue())
+                req_json.write_text(
+                    json.dumps({
+                        "dry_path": str(dry_path),
+                        "target_path": str(tgt_path),
+                        "selected_inventory": selected_inventory,
+                        "budget": budget,
+                        "out_wav": str(out_wav),
+                        "out_json": str(out_json),
+                    }),
+                    encoding="utf-8",
+                )
+
+                with st.spinner("AI가 보유 이펙터 중에서 최적의 노브를 탐색 중입니다... (약 20~40초 소요)"):
+                    proc = subprocess.run(
+                        [sys.executable, "-c", WORKER_CODE, str(req_json)],
+                        cwd=str(PROJECT_ROOT),
+                        capture_output=True,
+                        text=True,
+                    )
+
+                if proc.returncode != 0:
+                    st.error("실행 중 오류가 발생했습니다.")
+                    st.code(proc.stderr or proc.stdout)
+                else:
+                    best = json.loads(out_json.read_text(encoding="utf-8"))
+                    st.success(
+                        f"탐색 완료! 최적 체인: {' → '.join(best['effect_types'])} "
+                        f"(Loss: {best['loss']:.4f})"
+                    )
+                    a1, a2, a3 = st.columns(3)
+                    with a1:
+                        st.write("🎸 Dry 원음")
+                        st.audio(dry_file.getvalue(), format="audio/wav")
+                    with a2:
+                        st.write("🎯 목표 톤")
+                        st.audio(target_file.getvalue(), format="audio/wav")
+                    with a3:
+                        st.write("✨ AI 재현 결과")
+                        st.audio(out_wav.read_bytes(), format="audio/wav")
+
+                    render_chain_cards(best.get("chain", []))
 
 st.divider()
-st.caption("TONE MATCH / LOCAL DEMO · 실제 오디오 파일이나 추정 모델을 사용하지 않습니다.")
+st.caption("HAI 2026-2 Project Team 2 · CNN-guided CMA-ES Guitar Effect Chain Estimation")

@@ -1,0 +1,22 @@
+{
+  "target_id": "wet_strat_sample_G53-40100-1111-00001_808_scream_002",
+  "mode": "CNN-TopK",
+  "gt_chain": [
+    "808_scream"
+  ],
+  "effect_types": [
+    "808_scream"
+  ],
+  "chain": [
+    {
+      "effect_type": "808_scream",
+      "values": {
+        "level": 51.7407,
+        "overdrive": 69.2743,
+        "tone": 48.3842
+      }
+    }
+  ],
+  "loss": 0.00264517873115828,
+  "elapsed_sec": 48.11
+}
