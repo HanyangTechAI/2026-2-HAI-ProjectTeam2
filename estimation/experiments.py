@@ -8,7 +8,7 @@ from .data import cache_native_dry, prepare, write_json
 from .evaluate import evaluate, renderer_status
 from .train import train
 
-DEFAULT_OUTPUT = 'outputs/step1_vst_v1'
+DEFAULT_OUTPUT = 'outputs/step2_ir_v1'
 
 
 def check_cache_source(dataset, cache):

@@ -1,4 +1,133 @@
-# VST 드라이브 7종 전용 실험
+# VST7 CNN · CMA-ES 실험 결과
+
+현재 기준은 공유 Step 2 데이터와 현재 노브 스키마로 재학습한 모델이다.
+실험 수치는 이 문서에서 관리하고, 실행 방법은 [README.md](README.md)를 참고한다.
+
+<!-- step2-2026-11-22:start -->
+## 2026-11-22 — Step 2: current-schema retraining and paired external guitars
+
+- 기존 CNN 구조, 현재 VST 7종 노브 범위, Marshall V30 IR(+12.5 dB)을 유지. 컴프/EQ 제외.
+- `step2_ir_v1`: 2,730쌍, Dry 원본 78개. train 1,890 / validation 420 / test 420쌍.
+- 30 epoch, seed 42, best epoch **7** (전체 validation loss 최소). 외부 데이터로 모델을 선택하지 않음.
+- best epoch loss: train 0.316113, validation 0.528701.
+- `step2_real_v1`: 전체 **280쌍 / Dry 원본 40개**를 외부 평가. 임의 test 42쌍으로 제한하지 않음.
+- 학습/외부 Dry ID·내용 해시 중복 0. 대응 Dry는 각 생성 폴더 `manifest.render_input`의 `dry/`만 사용.
+- 외부 Wet도 VST+IR 합성이다. 새로운 기타/픽업/연주에 대한 평가이며 실제 페달/앰프 녹음 검증은 아니다.
+- namespace: ibanez_bridge_hu, ibanez_bridge_neck_sc, ibanez_chords, ibanez_neck_hu, strat_chords
+- checkpoint SHA256: `8d7c16b95509c6db523190d4a22bd9714c74fbbb5059727fa76acd588c9b05b7`.
+
+| 평가 | 쌍 수 | Top-1 | Top-3 | Macro F1 |
+|---|---:|---:|---:|---:|
+| 합성 test | 420 | 80.95% | 97.86% | 0.8100 |
+| 외부 기타 전체 | 280 | 65.00% | 95.36% | 0.6397 |
+
+- 합성 test → 외부 기타 Top-1 변화: **-15.95 percentage points**.
+- 280쌍은 독립 녹음 280개가 아니라 Dry 40개의 7종 변형이다. 표본 독립성을 과장하지 않는다.
+- 모든 d는 이 모델의 train-only spectral/dynamics scale, 0.5/0.5 가중치로 고정. 외부 데이터의 scale로 다시 보정하지 않음.
+- 11/21 모델은 노브 범위·거리 구현/데이터가 달라 이번 수치와 직접적인 개선율을 계산하지 않는다.
+
+| 실제 렌더링 d (각 70쌍 균형 표본) | CNN Top-1 | CNN Top-3 최선 | 정답 체인 재현 oracle |
+|---|---:|---:|---:|
+| 합성 test | 0.183187 | 0.142977 | 0.000397 |
+| 외부 기타 | 0.239406 | 0.171376 | 0.013895 |
+
+주요 혼동 (합성 test, 정답 → 예측):
+- `o_drive` → `808_scream`: 20쌍
+- `b_drive` → `f_fuzz`: 12쌍
+- `bat_distortion` → `808_scream`: 7쌍
+- `808_scream` → `o_drive`: 6쌍
+- `m_fuzz` → `f_fuzz`: 5쌍
+
+주요 혼동 (외부 기타, 정답 → 예측):
+- `808_scream` → `o_drive`: 23쌍
+- `one_distortion` → `m_fuzz`: 17쌍
+- `f_fuzz` → `b_drive`: 11쌍
+- `o_drive` → `b_drive`: 7쌍
+- `bat_distortion` → `o_drive`: 6쌍
+
+CMA-ES (외부 기타 전체, 공용 search API 호출; `search/` 수정 없음):
+- 평가 완료: **280쌍**, K=3, 후보당 40회(샘플당 최대 120회), restart=2, seed=42.
+- `search.evaluate_dataset.CnnPredictor`와 후보 생성 API, `search.pipeline.search_and_rank_chains`를 호출. 공개 `metric_fn`/`render_fn` 인자로 고정 combined d와 검증 렌더러를 전달.
+- 후보 amp_id는 정답의 알려진 고정 앰프로 설정. 정답 드라이브는 후보에 주입하지 않음.
+- CNN Top-1 **65.00%** → CMA 최종 Top-1 **95.36%**; Top-3 recall **95.36%**.
+- 동일 280쌍 평균 d: CNN 초기 **0.290801** → CMA **0.050388**; oracle **0.003753**.
+- 실제 최적화 render attempts 33,600; penalty 131. 초기/최종 WAV는 실제 점수화한 파형 그대로 저장. oracle 추가 렌더링과 preflight는 최적화 예산 밖.
+- 4개 독립 VST 프로세스. 평균 샘플 탐색 48.93초(동시 실행 경합 포함), 전체 wall 3496.85초, 처리량 12.49초/쌍.
+- 위 처리량은 단일 요청 지연시간이 아니며 이전 약 26초/샘플과 직접 비교하지 않는다.
+- 샘플마다 `dry.wav`, `target.wav`, `cnn_initial.wav`, `cma_best.wav`, `oracle.wav`, `result.json` 저장. FLOAT WAV 해시와 재계산 d로 결과를 확인.
+- 저장 위치: `outputs/step2_real_v1/search/shards/{0..3}/samples/<target_id>/`.
+
+후속 판단:
+- CNN 단독 Top-1의 15.95 percentage point 하락을 확인했으므로 입력 조건 다양화(232: 다른 기타/픽업·코드, 노이즈/게인)의 후속 통제 실험을 권장한다. 이번 실행은 현재 조건의 기준 실험으로 보존한다.
+- 외부 280쌍을 반복 튜닝용 validation으로 사용하지 않고, 추가 학습/validation용 Dry를 별도로 확보한다.
+- 데이터 생성은 팀 공용 `scripts/generate_step1_dataset.py`, IR 적용은 `scripts/apply_amp_dataset.py`를 사용. estimation 내부의 이전 생성·Demucs 비교 실행기는 제거했으며 현재 실험은 공유 Step 2 데이터를 사용.
+- 공유 드라이브 원본 수정 없음. 기존 모델/결과 보존. 기존 로컬 IR이 공유 IR과 동일한 해시여서 재사용하고 빠진 파일만 복사.
+
+재현 명령:
+```powershell
+.\.conda-cnn\python.exe -m estimation.experiments --dataset data/local/step2_ir_v1 --output outputs/step2_ir_v1 --epochs 30
+.\.conda-cnn\python.exe -m estimation.step2_experiment evaluate
+.\.conda-cnn\python.exe -m estimation.step2_experiment parallel-search --workers 4 --budget 40 --k 3
+.\.conda-cnn\python.exe -m estimation.step2_experiment report
+```
+
+<!-- step2-2026-11-22:end -->
+
+<!-- step2-quality:start -->
+### Step 2 데이터 품질 및 최종 artifact 재검증
+
+- 학습 데이터 2,730쌍 전수 검사: 캐비닛만 처리한 Dry와 일치하는 Wet 없음.
+- 외부 데이터 280쌍 중 아래 1쌍은 Wet이 `apply_amp(Dry)`와 정확히 일치. 드라이브 bypass 후 IR만 적용된 것으로 의심된다. 공유 원본·라벨 수정 없음.
+  - `wet_ibanez_bridge_neck_sc_G53-52302-1111-185_one_distortion_001`
+- 요청한 전체 280쌍을 primary 결과로 유지하고, 문제가 있는 1쌍을 제외한 수치는 보조 결과로만 제공한다.
+- 279쌍 보조 CNN Top-1: 65.23%; Top-3: 95.70%.
+- 279쌍 보조 CMA Top-1: 95.70%; 평균 d 0.048258; oracle d 0.000370.
+- CNN 정확도 하락은 이 1쌍만으로 설명되지 않는다. 해당 표본은 노브 오차/정답 렌더링 해석 시 따로 표시한다.
+- 독립 재검증 **passed**: 최선 checkpoint 선택, 현재 스키마 일치, 420/280 분류 집계, 280개 탐색 결과와 WAV 1,400개 해시·형식·거리 재계산, 예산·초기값 유지 확인.
+- 상세 기록: `outputs/step2_real_v1/artifact_audit.json`, 두 output 폴더의 `cabinet_only_audit.json`.
+
+정답 드라이브 head의 정규화 노브 MAE (낮을수록 좋음):
+
+| 드라이브 | 합성 test | 외부 기타 전체 |
+|---|---:|---:|
+| 808_scream | 0.210617 | 0.237852 |
+| b_drive | 0.216662 | 0.195100 |
+| o_drive | 0.179047 | 0.200177 |
+| one_distortion | 0.201954 | 0.280241 |
+| bat_distortion | 0.212047 | 0.271794 |
+| f_fuzz | 0.252050 | 0.270953 |
+| m_fuzz | 0.197544 | 0.210451 |
+
+- 위 노브 오차는 정답 종류가 알려진 조건에서 해당 head를 평가한 값이며, 잘못 선택한 이펙터의 전체 시스템 노브 정확도를 뜻하지 않는다.
+- CMA 최종 종류가 맞은 267쌍의 평균 정규화 노브 MAE: 0.096845. 표본 조건이 달라 위 전체 head 오차와 직접 비교하지 않는다.
+
+외부 입력 조건별 CNN 성능:
+
+| 조건 | Dry 원본 | 쌍 수 | Top-1 | Top-3 |
+|---|---:|---:|---:|---:|
+| ibanez_bridge_hu | 10 | 70 | 60.00% | 91.43% |
+| ibanez_bridge_neck_sc | 10 | 70 | 68.57% | 95.71% |
+| ibanez_chords | 5 | 35 | 65.71% | 97.14% |
+| ibanez_neck_hu | 10 | 70 | 67.14% | 95.71% |
+| strat_chords | 5 | 35 | 62.86% | 100.00% |
+
+<!-- step2-quality:end -->
+
+## 2026-11-23 — Step 2 이전 코드 정리
+
+- 미사용 `estimation/generate_drive_only.py`, `estimation/amp_dataset.py`, `estimation/domain_experiment.py` 제거.
+- 학습·CNN 초기값 비교기의 기본 출력 및 모델 경로를 `outputs/step2_ir_v1/`로 변경.
+- 팀 공용 생성기 2개를 생성 경로로 안내하고, 이전 생성·Demucs 실행 명령을 현재 사용 안내에서 제거.
+- 현재 학습·평가·CMA-ES 구현과 기존 데이터·checkpoint·결과 원자료, 공유 드라이브 원본은 보존.
+- 이번 정리는 새 학습·탐색 실험이 아니며 아래 과거 수치를 현재 성능으로 사용하지 않는다.
+
+## Step 2 이전 실험 기록
+
+이전 노브 범위·데이터·거리 설정으로 수행한 기록이다. 현재 실행 안내와 분리해 보존하며,
+아래 경로와 재검사 명령은 당시의 환경을 가리킨다. 해당 결과를 현재 모델과 직접 비교하지 않는다.
+
+<details>
+<summary>2026-11-18 VST7 및 11/21 캐비닛·Demucs 실험 기록 펼치기</summary>
 
 2026-11-18. 컴프·EQ 없는 새 데이터로 기존 CNN encoder/fusion 구조를 재학습했다.
 학습·평가·CMA-ES의 모든 실험 결과는 이 문서에 모은다. 다른 문서는 사용법과 검사 절차를 설명한다.
@@ -362,3 +491,5 @@ K3는 후보 블록 시간의 합이다. 사용자가 관측한 26초와 측정 
 - 재검사: `python outputs/vst7_amp_ir/audit_results.py`.
 
 <!-- AMP_AUDIT_END -->
+
+</details>

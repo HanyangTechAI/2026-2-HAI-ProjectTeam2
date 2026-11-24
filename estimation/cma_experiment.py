@@ -19,8 +19,8 @@ from .renderer import activation_preflight as preflight
 from .amp import context_from_record
 
 
-def run(cache='outputs/step1_vst_v1/dataset', checkpoint='outputs/step1_vst_v1/model/best.pt',
-        output='outputs/step1_vst_v1/cma_pilot', split='validation', samples=7, k=3,
+def run(cache='outputs/step2_ir_v1/dataset', checkpoint='outputs/step2_ir_v1/model/best.pt',
+        output='outputs/step2_ir_v1/cma_pilot', split='validation', samples=7, k=3,
         budget=180, restarts=2, seed=42, prepare_only=False, sample_id=None):
     torch.set_num_threads(4)
     from threadpoolctl import threadpool_limits
@@ -165,9 +165,9 @@ def run(cache='outputs/step1_vst_v1/dataset', checkpoint='outputs/step1_vst_v1/m
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--cache', default='outputs/step1_vst_v1/dataset')
-    parser.add_argument('--checkpoint', default='outputs/step1_vst_v1/model/best.pt')
-    parser.add_argument('--output', default='outputs/step1_vst_v1/cma_pilot')
+    parser.add_argument('--cache', default='outputs/step2_ir_v1/dataset')
+    parser.add_argument('--checkpoint', default='outputs/step2_ir_v1/model/best.pt')
+    parser.add_argument('--output', default='outputs/step2_ir_v1/cma_pilot')
     parser.add_argument('--split', choices=['validation','test'], default='validation')
     parser.add_argument('--samples', type=int, default=7, help='Multiple of 7; -1 for all')
     parser.add_argument('--sample-id', help='One explicit smoke sample; overrides balanced sampling')

@@ -236,7 +236,7 @@ class PairDataset(Dataset):
     def __init__(self, cache, split):
         self.cache = Path(cache)
         all_rows, self.metadata = load_manifest(cache)
-        self.rows = [r for r in all_rows if r['split']==split]
+        self.rows = [r for r in all_rows if split == 'all' or r['split']==split]
         self.dry = np.load(self.cache/'dry_features.npy', mmap_mode='r')
         self.wet = np.load(self.cache/'wet_features.npy', mmap_mode='r')
         if not self.rows:
