@@ -2,3 +2,7 @@
 torch>=2.6
 cma>=4.0
 threadpoolctl>=3.0
+# stylematch (AFx-Rep 톤 맞추기)
+torchaudio>=2.6
+torchlibrosa==0.1.0
+pyyaml>=6.0
