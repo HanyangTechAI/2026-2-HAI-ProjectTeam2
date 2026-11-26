@@ -16,6 +16,7 @@ isolated 파일명이 "브랜드_모델_노브_값_..." 형식이면 페달과 �
 python -m scripts.prepare_step3_targets --separated <드라이브>/data/step3_real_data
     --isolated <드라이브>/data/step3_val_data --output data/local/step3_targets_v1
 선택 구간 바꾸기: targets.csv의 chosen 칸을 c2/c3으로 고친 뒤 --rechoose로 다시 실행
+--intro: 분리 기타는 가장 큰 구간 대신 "기타가 처음 들어오는 지점"부터 2.5초 (가장 큰 구간은 잔여음·깨짐이 많음)
 """
 import argparse
 import csv
@@ -72,6 +73,19 @@ def candidates(audio, sr):
     return [(s, audio[s:s + win]) for s in chosen]
 
 
+def intro_start(audio, sr, rel_db=-15.0, active_share=0.7):
+    """기타가 처음 들어오는 지점(초). 100 ms 창 음량이 곡의 큰 부분(95번째 백분위) −15 dB를 넘고,
+    이후 2.5초 중 70% 이상이 그 수준이면 시작으로 봄 (분리 잔여음의 작은 소리는 무시)."""
+    win = int(0.1 * sr)
+    lv = 10 * np.log10(np.array([np.mean(audio[i:i + win] ** 2) for i in range(0, len(audio) - win, win)]) + 1e-12)
+    active = lv > np.percentile(lv, 95) + rel_db
+    need = int(SEGMENT_SECONDS / 0.1)
+    for i in range(len(active) - need):
+        if active[i] and active[i:i + need].mean() >= active_share:
+            return i * win
+    return candidates(audio, sr)[0][0]
+
+
 def normalize(clip):
     rms = np.sqrt(np.mean(clip ** 2))
     return (clip * (10 ** (TARGET_RMS_DB / 20) / max(rms, 1e-9))).astype(np.float32)
@@ -83,6 +97,7 @@ def main(argv=None):
     parser.add_argument("--isolated", help="기타 단독 톤 wav 폴더")
     parser.add_argument("--output", required=True)
     parser.add_argument("--rechoose", action="store_true", help="targets.csv의 chosen 칸대로 선택 구간만 다시 저장")
+    parser.add_argument("--intro", action="store_true", help="분리 기타는 기타가 처음 들어오는 지점부터 (chosen=intro)")
     args = parser.parse_args(argv)
     out = Path(args.output)
 
@@ -115,10 +130,15 @@ def main(argv=None):
             cands = candidates(audio, sr)
             row = {"id": rid, "kind": kind, "source_file": path.name, "chosen": "c1",
                    "start_sec": round(cands[0][0] / sr, 2)}
+            chosen_clip = cands[0][1]
+            if args.intro and kind == "separated":
+                s0 = intro_start(audio, sr)
+                chosen_clip = audio[s0:s0 + int(SEGMENT_SECONDS * sr)]
+                row.update({"chosen": "intro", "start_sec": round(s0 / sr, 2)})
             for k, (start, clip) in enumerate(cands, 1):
                 sf.write(out / "candidates" / f"{rid}_c{k}.wav", normalize(clip), sr, subtype="FLOAT")
                 row[f"start_c{k}"] = round(start / sr, 2)
-            sf.write(out / kind / f"{rid}.wav", normalize(cands[0][1]), sr, subtype="FLOAT")
+            sf.write(out / kind / f"{rid}.wav", normalize(chosen_clip), sr, subtype="FLOAT")
             pedal, knobs, drive = parse_isolated(path.stem) if kind == "isolated" else ("", "", "")
             row.update({"pedal": pedal, "knobs_clock": knobs, "drive_in_catalog": drive,
                         "source_rms_db": round(float(20 * np.log10(np.sqrt(np.mean(audio ** 2)) + 1e-12)), 1),

@@ -39,7 +39,8 @@ python -m scripts.prepare_step3_targets --separated <드라이브>/data/step3_re
 # 톤 맞추기 → 목표별 target / dry / top1~3.wav + result.json
 python -m stylematch.run_targets --targets data/local/step3_targets_v1 `
   --raw-separated <드라이브>/data/step3_real_data --raw-isolated <드라이브>/data/step3_val_data `
-  --out outputs/stylematch/step3_v1 [--owned 808_scream b_drive] [--resume]
+  --out outputs/stylematch/step3_v1 [--owned 808_scream b_drive] [--resume] [--room]
+# --room: (실험용) 리버브 게이트를 넘는 목표만 리버브 흡수 단계 추가, 기본 꺼짐 – EXPERIMENTS.md 7절
 
 # 평가: 독립 지표(탐색에 안 쓴 지표)로 기준선 대비 개선 / 거리 신뢰도
 python -m stylematch.assess results --dir outputs/stylematch/step3_v1
@@ -54,9 +55,10 @@ python -m unittest stylematch.test_stylematch
 | 파일 | 내용 |
 |---|---|
 | `afx.py` | AFx-Rep 로드 · 지문 · 거리(dropout 옵션) |
-| `match.py` | 격자 선별 → 페달 내 CMA-ES → 음량 맞추기, 앰프 크런치 |
+| `match.py` | 격자 선별 → 페달 내 CMA-ES → 음량 맞추기, 앰프 크런치, 공간 리버브(옵션) |
 | `run_targets.py` | Step 3 목표 일괄 실행, 데모·청취용 결과 저장 |
 | `assess.py` | 독립 지표 평가, 거리 신뢰도(순위 상관) |
 | `evaluate.py` | 정답 있는 데이터로 페달 일치 채점 (보조 지표) |
+| `room_eval.py` | 공간 리버브 흡수 단계 검증 (합성 목표 + 인공 리버브) |
 | `head.py` | AFx-Rep 보정층 실험 (실패 기록용, 사용 안 함) |
 | `third_party/panns.py` | AFx-Rep 인코더 정의 (ST-ITO, Apache 2.0 / MIT) |

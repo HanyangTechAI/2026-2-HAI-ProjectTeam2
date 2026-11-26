@@ -29,17 +29,21 @@ from effects import load_effects
 from effects.audio_io import read_mono
 from stylematch.afx import embed_long
 from stylematch.evaluate import FAMILY, PEDAL_FAMILY, common_dry
-from stylematch.match import CRUNCH, match_tone, render_match
+from stylematch.match import CRUNCH, ROOM, match_tone, render_match
 
 
 def describe(chain, effects):
     """사람이 읽는 형태: 페달 이름 · 노브 · 크런치."""
-    drive = next(i for i in chain["chain"] if i["effect_type"] != CRUNCH)
+    drive = next(i for i in chain["chain"] if i["effect_type"] not in (CRUNCH, ROOM))
     crunch = next((i["values"]["drive_db"] for i in chain["chain"] if i["effect_type"] == CRUNCH), 0.0)
+    room = next((i["values"] for i in chain["chain"] if i["effect_type"] == ROOM), None)
     ref = effects[drive["effect_type"]].get("reference_pedal") or {}
-    return {"drive": drive["effect_type"], "pedal": f"{ref.get('brand', '')} {ref.get('model', '')}".strip(),
-            "knobs": {k: round(float(v), 1) for k, v in drive["values"].items()},
-            "amp_crunch_db": round(float(crunch), 1)}
+    out = {"drive": drive["effect_type"], "pedal": f"{ref.get('brand', '')} {ref.get('model', '')}".strip(),
+           "knobs": {k: round(float(v), 1) for k, v in drive["values"].items()},
+           "amp_crunch_db": round(float(crunch), 1)}
+    if room is not None:  # 목표 녹음의 공간감 흡수용 (추천 대상 아님)
+        out["room_reverb"] = {k: round(float(v), 2) for k, v in room.items()}
+    return out
 
 
 def main(argv=None):
@@ -51,6 +55,9 @@ def main(argv=None):
     p.add_argument("--only", choices=["separated", "isolated"])
     p.add_argument("--resume", action="store_true", help="result.json이 있는 목표는 건너뛰고 이어서 실행")
     p.add_argument("--owned", nargs="+", help="보유 드라이브만 후보로 (예: 808_scream b_drive). 없으면 7종 전체")
+    p.add_argument("--embed-window", type=float,
+                   help="목표 지문을 원본 전체 대신 start_sec부터 이 길이(초)만으로 계산 (예: 11)")
+    p.add_argument("--room", action="store_true", help="리버브 게이트를 넘는 목표만 공간 리버브 단계로 흡수 (실험용)")
     a = p.parse_args(argv)
 
     effects = load_effects()
@@ -76,8 +83,14 @@ def main(argv=None):
         t0 = time.perf_counter()
         target, _ = read_mono(Path(a.targets) / r["kind"] / f"{r['id']}.wav")
         raw_dir = raw_dirs.get(r["kind"])
-        te = embed_long(read_mono(Path(raw_dir) / r["source_file"])[0], sr) if raw_dir else None
-        res = match_tone(dry, target, sr, k=a.k, budget=a.budget, target_embedding=te, allowed=a.owned)
+        te = None
+        if raw_dir:
+            raw = read_mono(Path(raw_dir) / r["source_file"])[0]
+            if a.embed_window:  # 선택 구간부터 일정 길이만 (곡 전체의 큰 구간 대신)
+                s0 = int(float(r["start_sec"]) * sr)
+                raw = raw[s0:s0 + int(a.embed_window * sr)]
+            te = embed_long(raw, sr)
+        res = match_tone(dry, target, sr, k=a.k, budget=a.budget, target_embedding=te, allowed=a.owned, room=a.room)
         folder = out / r["kind"] / r["id"]
         folder.mkdir(parents=True, exist_ok=True)
         sf.write(folder / "target.wav", target, sr, subtype="FLOAT")
@@ -93,8 +106,9 @@ def main(argv=None):
         result = {"id": r["id"], "kind": r["kind"], "source_file": r["source_file"],
                   "reference_pedal_label": r.get("pedal") or None, "knobs_clock": r.get("knobs_clock") or None,
                   "truth_drive": truth, "truth_family": family, "screen_order": res["screen_order"],
-                  "candidates": cands, "seconds": round(time.perf_counter() - t0, 1),
-                  "method": "AFx-Rep grid -> CMA-ES within pedal (AFx-Rep distance, amp crunch) -> volume match"}
+                  "candidates": cands, "room_gate": res.get("room_gate"), "seconds": round(time.perf_counter() - t0, 1),
+                  "method": "AFx-Rep grid -> CMA-ES within pedal (AFx-Rep distance, amp crunch"
+                            + (", room reverb" if a.room else "") + ") -> volume match"}
         (folder / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
         order = [c["drive"] for c in cands] + [d for d in res["screen_order"] if d not in [c["drive"] for c in cands]]
         summary_rows.append({"id": r["id"], "kind": r["kind"], "truth": truth, "family": family,
